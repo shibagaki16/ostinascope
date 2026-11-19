@@ -1,0 +1,51 @@
+# macOS / iCloud
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Icon?
+*.icloud
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*~
+
+# Claude Code (personal settings)
+.claude/settings.local.json
+
+# Node (no dependencies yet, but keep it clean if tooling is added)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.eslintcache
+
+# Build / tool output
+dist/
+build/
+.cache/
+coverage/
+*.log
+
+# Local dev HTTPS certificate (scripts/serve.py --https)
+.cert/
+*.pem
+*.key
+*.crt
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local scratch: captures, recordings, exported posters
+captures/
+recordings/
+ostinascope-specimen*.png
+*.local.*

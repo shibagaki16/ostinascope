@@ -1,0 +1,12 @@
+{
+  "name": "ostinascope",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Find hidden repetitions through the camera and turn them into loops.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "serve": "python3 scripts/serve.py",
+    "serve:https": "python3 scripts/serve.py --https"
+  }
+}
