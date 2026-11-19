@@ -134,6 +134,20 @@ export function drawPoster(scale = 1, doc = document) {
   g.fill();
   caption(g, 'fig.7  RADIAL   n = 96', 1330, 2470, 1420, 2410);
 
+  // fig.9 ROW — five look-alike bottles, unevenly spaced (15 : 15 : 20 : 25u):
+  // not a period, but a row; the gaps become the rhythm.
+  // on a shelf: a plain backing so the debris underneath does not show
+  g.fillStyle = PAPER;
+  g.fillRect(200, 1100, 1040, 160);
+  g.fillStyle = INK;
+  g.fillRect(200, 1252, 1040, 4);
+  let bx = 270;
+  for (const gap of [15, 15, 20, 25, 0]) {
+    bottle(g, bx, 1250, 1);
+    bx += gap * U;
+  }
+  caption(g, 'fig.9  ROW   ×5   15 : 15 : 20 : 25u', 1260, 1215, 1220, 1205);
+
   // fig.8 TEXT — lines of type are stripes too (leading = 2.5u)
   g.fillStyle = INK;
   g.font = `500 19px ${MONO}`;
@@ -154,6 +168,25 @@ export function drawPoster(scale = 1, doc = document) {
 }
 
 // --------------------------------------------------------------------------
+
+// A bottle standing on (x, y): neck, shoulders, a red label band.
+function bottle(g, x, y, k) {
+  g.fillStyle = INK;
+  g.fillRect(x - 9 * k, y - 132 * k, 18 * k, 36 * k);
+  g.beginPath();
+  g.moveTo(x - 9 * k, y - 96 * k);
+  g.lineTo(x - 30 * k, y - 72 * k);
+  g.lineTo(x - 30 * k, y);
+  g.lineTo(x + 30 * k, y);
+  g.lineTo(x + 30 * k, y - 72 * k);
+  g.lineTo(x + 9 * k, y - 96 * k);
+  g.closePath();
+  g.fill();
+  g.fillStyle = RED;
+  g.fillRect(x - 30 * k, y - 52 * k, 60 * k, 24 * k);
+  g.fillStyle = PAPER;
+  g.fillRect(x - 18 * k, y - 46 * k, 36 * k, 4 * k);
+}
 
 function frame(g) {
   g.strokeStyle = INK;

@@ -16,6 +16,7 @@
 // Pure module: no DOM access, so it runs in a worker and in Node for tests.
 
 import { makePowerSpectrum } from './fft.js';
+import { createRowFinder } from './rows.js';
 
 export const CELL = 32;
 const N = CELL;
@@ -29,16 +30,18 @@ export const TYPE = Object.freeze({
   DOTS: 'DOTS',
   CONCENTRIC: 'CONCENTRIC',
   RADIAL: 'RADIAL',
+  ROW: 'ROW', // similar things in a line (rows.js)
 });
 
 export function familyOf(type) {
   if (type === TYPE.STRIPE) return 'line';
   if (type === TYPE.GRID || type === TYPE.DOTS) return 'lattice';
+  if (type === TYPE.ROW) return 'row';
   return 'radial';
 }
 
 export const DETECTOR_DEFAULTS = Object.freeze({
-  sensitivity: 1, // >1 = more permissive
+  sensitivity: 1.3, // >1 = more permissive (also loosens the ROW thresholds)
   minContrast: 0.02, // grey std below this = blank cell
   minProminence: 20, // peak power / median power at the same radius
   minIsolation: 0.85, // share of the 5×5 bins around the peak that sits in its 3×3
@@ -69,6 +72,10 @@ export const DETECTOR_DEFAULTS = Object.freeze({
   grow: true, // regions take in agreeing near-miss neighbours (extent only)
   rings: true,
   ringCells: 7,
+  rows: true, // look for rows of similar things too
+  // run the row search's passes in turns over this many frames (the others
+  // reuse their previous result): 1 = all every frame (tests, benchmarks)
+  rowSplit: 1,
 });
 
 const now = () => (globalThis.performance ? performance.now() : Date.now());
@@ -84,6 +91,7 @@ const ratio = (a, b) => (a > b ? a / b : b / a);
 export function createDetector(options = {}) {
   const opt = { ...DETECTOR_DEFAULTS, ...options };
   const power = makePowerSpectrum(N);
+  const rowFinder = createRowFinder(options.rowOptions || {});
   const work = new Float64Array(NN);
   const P = new Float64Array(NN);
   const mask = new Uint8Array(NN);
@@ -433,13 +441,18 @@ export function createDetector(options = {}) {
     const score1 = (e1 + h1) / half;
     out.score1 = score1;
 
-    if (k2 && !out.weak && e2 >= opt.latticeSecond * e1 && prom2 * sens >= opt.minProminence &&
+    // a second direction is where seams and noise fake a grid: above 1 the
+    // sensitivity only partly applies to it
+    const sens2 = Math.min(sens, 1.1);
+    const firm = prom1 * sens2 >= opt.minProminence &&
+      iso1 >= (prom1 * sens2 >= opt.strongProminence ? opt.minIsolationStrong : opt.minIsolation);
+    if (k2 && !out.weak && firm && e2 >= opt.latticeSecond * e1 && prom2 * sens2 >= opt.minProminence &&
         rep2 >= opt.minRepeat) {
       const h2 = energyAt(2 * k2.x, 2 * k2.y);
       const cp = energyAt(k1.x + k2.x, k1.y + k2.y);
       const cm = energyAt(k1.x - k2.x, k1.y - k2.y);
       const score2 = (e1 + e2 + h1 + h2 + cp + cm) / half;
-      if (score2 * sens >= opt.latticeScore) {
+      if (score2 * sens2 >= opt.latticeScore) {
         const r2 = Math.hypot(k2.x, k2.y);
         const a2 = lineAngle(k2);
         let p1 = N / r1;
@@ -571,9 +584,54 @@ export function createDetector(options = {}) {
       regions.push(...buildRegions(lv));
     }
 
-    const kept = dedupe(absorbRims(regions));
+    let kept = dedupe(absorbRims(regions));
+    if (opt.rows) kept = kept.concat(findRows(kept, dims));
     for (const reg of kept) Object.assign(reg, regionColor(rgba, W, H, reg));
     return { W, H, levels, regions: kept, ms: now() - t0 };
+  }
+
+  // Rows of similar things, unless the same repetition is already a
+  // stripe/lattice region (then the spectral one is the better reading).
+  let rowFrame = 0;
+  let rowCache = [];
+  let rowDims = '';
+  function findRows(periodic, dims) {
+    const passes = rowFinder.options.passes;
+    const split = Math.max(1, opt.rowSplit | 0);
+    const key = dims.map((d) => d.join('x')).join(',');
+    if (key !== rowDims) {
+      rowCache = [];
+      rowDims = key;
+    }
+    const inside = periodic.filter((q) => q.family !== 'radial');
+    const skip = (x, y) => inside.some((q) => x > q.x && x < q.x + q.w && y > q.y && y < q.y + q.h);
+    let rows = [];
+    passes.forEach((pass, i) => {
+      const L = pass.level;
+      if (!pyramid[L] || !dims[L]) return;
+      if (split === 1 || i % split === rowFrame % split || !rowCache[i]) {
+        const sc = opt.levels[L].scale || 2 ** L;
+        rowCache[i] = rowFinder.findInLevel(pyramid[L], dims[L][0], dims[L][1], sc, L, skip, opt.rowSensitivity ?? opt.sensitivity).map((r) => ({
+          ...r, img: Float32Array.from(pyramid[L]), iw: dims[L][0],
+        }));
+      }
+      rows.push(...rowCache[i]);
+    });
+    rowFrame++;
+    rows = rowFinder.consolidate(rows);
+    const out = [];
+    for (const r of rows) {
+      const reg = rowFinder.toRegion(r, r.img, r.iw, r.scale);
+      const dup = periodic.some((q) => {
+        const ix = Math.max(0, Math.min(q.x + q.w, reg.x + reg.w) - Math.max(q.x, reg.x));
+        const iy = Math.max(0, Math.min(q.y + q.h, reg.y + reg.h) - Math.max(q.y, reg.y));
+        if ((ix * iy) / (reg.w * reg.h) < 0.4) return false;
+        const ps = [q.period, q.period2].filter(Boolean);
+        return ps.some((p) => [1, 2, 3].some((m) => ratio(reg.period, p * m) < 1.3));
+      });
+      if (!dup) out.push(reg);
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------------
@@ -815,7 +873,8 @@ export function createDetector(options = {}) {
       if (strict < band.minCells) {
         const mean = (f) => cs.reduce((s, c) => s + (c[f] || 0), 0) / cs.length;
         const gprom = Math.exp(cs.reduce((s, c) => s + Math.log(Math.max(1, c.prom || 1)), 0) / cs.length);
-        const strong = gprom * opt.sensitivity >= opt.smallProminence && mean('iso1') >= opt.smallIsolation &&
+        const sens = lattice ? Math.min(opt.sensitivity, 1.1) : opt.sensitivity; // see sens2
+        const strong = gprom * sens >= opt.smallProminence && mean('iso1') >= opt.smallIsolation &&
           mean('rep1') >= opt.smallRepeat && (!lattice || cs.length >= 2);
         if (!strong) continue;
       }

@@ -54,3 +54,19 @@ test('orientation pans: 45° and 135° stripes sit on opposite sides', () => {
   const r = M.panFor({ ...base, angle: 45 }, view);
   assert.ok(l < -0.3 && r > 0.3);
 });
+
+test('a row plays one hit per thing, where it sits along the row', () => {
+  const row = (ts, offs = []) => M.rowSpec({ ...base, family: 'row', type: 'ROW', size: 0.15, evenness: 0.2,
+    members: ts.map((t, i) => ({ t, off: offs[i] || 0, sim: 0.9 })) });
+  const even = row([0, 1, 2, 3]);
+  assert.deepEqual(even.steps.map((s) => s.pos * 16), [0, 4, 8, 12]);
+  const uneven = row([0, 1, 1.5, 3]);
+  assert.deepEqual(uneven.steps.map((s) => s.pos * 16), [0, 4, 6, 12]);
+  assert.equal(uneven.pattern, 'x···x·x·····x···');
+  // a thing set higher than the others is a higher note
+  const lifted = row([0, 1, 2], [0, -0.6, 0]);
+  assert.ok(lifted.steps[1].midi > lifted.steps[0].midi);
+  // identical rows sound in unison; a different rhythm does not
+  assert.equal(row([0, 1, 2, 3]).sig, even.sig);
+  assert.notEqual(uneven.sig, even.sig);
+});

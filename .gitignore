@@ -49,3 +49,6 @@ captures/
 recordings/
 ostinascope-specimen*.png
 *.local.*
+
+# Benchmark data (downloaded photos, generated views, results)
+bench/data/

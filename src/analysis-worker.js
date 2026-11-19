@@ -8,7 +8,8 @@
 import { createDetector } from './detector.js';
 import { slimResult } from './analysis.js';
 
-const detector = createDetector();
+// rows: half of the search each frame (see DETECTOR_DEFAULTS.rowSplit)
+const detector = createDetector({ rowSplit: 2 });
 
 self.onmessage = (e) => {
   const m = e.data;

@@ -42,7 +42,7 @@ export function createTracker(options = {}) {
     const cd = Math.hypot(d.cx - p.x, d.cy - p.y) / reach;
     const cp = Math.abs(Math.log(d.period / tr.period)) / opt.maxLogPeriod;
     let ca = 0;
-    if (tr.family === 'line') ca = angleDiff(d.angle, tr.angle) / opt.maxAngle;
+    if (tr.family === 'line' || tr.family === 'row') ca = angleDiff(d.angle, tr.angle) / opt.maxAngle;
     else if (tr.family === 'lattice') ca = Math.abs(Math.log(d.ratio / tr.ratio)) / 0.25;
     if (cd > 1 || cp > 1 || ca > 1) return Infinity;
     return cd + cp + ca;
@@ -83,6 +83,7 @@ export function createTracker(options = {}) {
       center: d.center ? { ...d.center } : null,
       contrast: d.contrast, sharp: d.sharp, hue: d.hue, sat: d.sat,
       score: d.score, cells: d.cells, level: d.level,
+      members: d.members, count: d.count, evenness: d.evenness, size: d.size,
     };
   }
 
@@ -119,6 +120,13 @@ export function createTracker(options = {}) {
     tr.score = lerp(tr.score, d.score, s);
     tr.cells = d.cells;
     tr.level = d.level;
+    if (d.members) {
+      // a row's members are taken as seen (their number is the rhythm)
+      tr.members = d.members;
+      tr.count = d.count;
+      tr.evenness = d.evenness;
+      tr.size = d.size;
+    }
     tr.hx = lerp(tr.hx, Math.cos(d.hue / DEG) * d.sat, s);
     tr.hy = lerp(tr.hy, Math.sin(d.hue / DEG) * d.sat, s);
     tr.sat = Math.hypot(tr.hx, tr.hy);

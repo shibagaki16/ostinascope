@@ -132,6 +132,10 @@ function normalise(r, unit) {
     period: r.period / unit,
     period2: r.period2 ? r.period2 / unit : undefined,
     center: r.center ? { x: r.center.x / unit, y: r.center.y / unit } : null,
+    size: r.size ? r.size / unit : undefined,
+    members: r.members
+      ? r.members.map((m) => ({ ...m, x: m.x / unit, y: m.y / unit, w: m.w / unit, h: m.h / unit, t: m.t / unit }))
+      : undefined,
   };
 }
 
@@ -238,13 +242,20 @@ function loop(ts) {
       const tr = state.trackById.get(e.id);
       const f = 0.5 + 0.5 * e.vel;
       if (tr) tr.flash = Math.max(tr.flash || 0, f);
+      if (tr && tr.type === 'ROW') {
+        tr.memberFlash ??= [];
+        tr.memberFlash[e.step] = 1;
+      }
       for (const t of state.followers.get(e.id) || []) t.flash = Math.max(t.flash || 0, f);
       const v = audio.voices.get(e.id);
       if (v) v.lastHit.set(e.step, ts);
     }
   }
   const decay = Math.exp(-dt / 130);
-  for (const tr of state.tracks) if (tr.flash) tr.flash *= decay;
+  for (const tr of state.tracks) {
+    if (tr.flash) tr.flash *= decay;
+    if (tr.memberFlash) for (let i = 0; i < tr.memberFlash.length; i++) tr.memberFlash[i] = (tr.memberFlash[i] || 0) * decay;
+  }
 
   renderer.draw(state);
 }

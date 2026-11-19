@@ -7,6 +7,7 @@ export const COLORS = {
   DOTS: '#F4F1EA',
   CONCENTRIC: '#7C9DFF',
   RADIAL: '#7C9DFF',
+  ROW: '#5BE39B',
 };
 const FONT = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
 const DEG = Math.PI / 180;
@@ -127,6 +128,10 @@ export function createRenderer(canvas) {
         return `${n} DOTS ／ 間隔${px}px → ${sp ? sp.rhythm : ''}`;
       case 'CONCENTRIC':
         return `${n} CONCENTRIC ／ Δr ${px}px → ${sp ? sp.voice : ''}`;
+      case 'ROW': {
+        const ev = Math.round((tr.evenness || 0) * 100);
+        return `${n} ROW ×${tr.count || 0} ／ 間隔${px}px ±${ev}% → ${sp ? sp.pattern : ''}`;
+      }
       default:
         return `${n} RADIAL → ${sp ? sp.voice : ''}`;
     }
@@ -144,7 +149,33 @@ export function createRenderer(canvas) {
     const ny = Math.cos(t);
     const maxLen = Math.min(tr.w, tr.h) * S * 0.8;
     const fit = (pp) => Math.max(1, Math.min(4, Math.floor(maxLen / Math.max(pp, 1e-3))));
-    if (tr.type === 'STRIPE') {
+    if (tr.type === 'ROW' && tr.members) {
+      // each thing in the row: a bracket and its number; a baseline through
+      // them; the one whose hit is sounding lights up
+      const ms = tr.members;
+      stroke(() => {
+        ctx.beginPath();
+        ms.forEach((m, i) => {
+          const x = (m.x + m.w / 2) * S;
+          const y = (m.y + m.h / 2) * S;
+          if (i) ctx.lineTo(x, y);
+          else ctx.moveTo(x, y);
+        });
+      }, color, 1, alpha * 0.7, [3, 4]);
+      ms.forEach((m, i) => {
+        const x = m.x * S;
+        const y = m.y * S;
+        const w = m.w * S;
+        const h = m.h * S;
+        const f = (tr.memberFlash && tr.memberFlash[i]) || 0;
+        if (f > 0.02) {
+          ctx.fillStyle = rgba(color, 0.25 * f);
+          ctx.fillRect(x, y, w, h);
+        }
+        stroke(corners(x, y, w, h, Math.min(8, w / 4, h / 4)), color, 1 + 1.5 * f, alpha);
+        tag(String(i + 1), x + 2, y + h - 3, color, { size: 9, alpha });
+      });
+    } else if (tr.type === 'STRIPE') {
       if (p >= 3) dimension(cx, cy, nx, ny, p, fit(p), color, alpha);
     } else if (tr.type === 'GRID') {
       const p2 = (tr.period2 || tr.period) * S;

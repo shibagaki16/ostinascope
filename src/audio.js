@@ -347,6 +347,8 @@ export class AudioEngine {
         return this._mallet(v.env, t, vel, tone, st.midi);
       case 'blip':
         return this._blip(v.env, t, vel, tone, st.midi);
+      case 'wood':
+        return this._wood(v.env, t, vel, tone, st.midi);
       default:
         return undefined; // drone: continuous, steps are visual only
     }
@@ -412,6 +414,24 @@ export class AudioEngine {
       o.start(t);
       o.stop(t + dec + 0.1);
     }
+  }
+
+  // A small woody knock: a pitched triangle that drops onto its note, plus
+  // a band-passed click.
+  _wood(dest, t, vel, tone, midi) {
+    const ctx = this.ctx;
+    const f = mtof(midi);
+    const dec = tone.decay ?? 0.16;
+    const o = ctx.createOscillator();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(f * 1.5, t);
+    o.frequency.exponentialRampToValueAtTime(f, t + 0.018);
+    const g = ctx.createGain();
+    this._env(g, t, vel * 0.55 * (tone.body ?? 1), 0.001, dec);
+    o.connect(g).connect(dest);
+    o.start(t);
+    o.stop(t + dec + 0.05);
+    this._noiseBurst(dest, t, vel * 0.25, 0.015, 'bandpass', Math.min(9000, f * 6));
   }
 
   _blip(dest, t, vel, tone, midi) {

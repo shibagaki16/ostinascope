@@ -5,6 +5,9 @@
 //   GRID        → polyrhythm from the ratio of its two spacings (e.g. 3:4)
 //   DOTS        → short pitched percussion on a Euclidean rhythm
 //   CONCENTRIC / RADIAL → drone with a tempo-synced swell
+//   ROW         → one woody hit per thing in the row, placed in the bar
+//                 where the thing sits along the row (uneven spacing =
+//                 uneven rhythm); things set higher or lower move the pitch
 //
 //   colour → pitch (pentatonic), sharpness → attack, contrast & area →
 //   level, orientation → pan.
@@ -202,6 +205,41 @@ export function droneSpec(t) {
   };
 }
 
+export function rowSpec(t) {
+  const ms = (t.members || []).slice().sort((a, b) => a.t - b.t);
+  const n = ms.length;
+  const pitch = colorToPitch(t.hue, t.sat);
+  const size = t.size || 0.15;
+  const oct = size > 0.2 ? -1 : size < 0.11 ? 1 : 0;
+  const span = n > 1 ? ms[n - 1].t - ms[0].t : 1;
+  const steps = [];
+  let last = -1;
+  ms.forEach((m, i) => {
+    // where along the row → where in the bar (the last thing leaves room
+    // for the loop to come round, as an evenly spaced row would)
+    const pos = n > 1 ? ((m.t - ms[0].t) / span) * ((n - 1) / n) : 0;
+    let q = Math.round(pos * 16);
+    if (q <= last) q = last + 1;
+    if (q > 15) return;
+    last = q;
+    const deg = clamp(Math.round(-(m.off || 0) * 2.5), -4, 4);
+    steps.push({ pos: q / 16, vel: i ? 0.62 + 0.2 * clamp((m.sim || 0.85) - 0.8, 0, 0.2) * 5 : 1, midi: midiOf(pitch, oct, deg) });
+  });
+  const grid = Array.from({ length: 16 }, (_, i) => (steps.some((st) => Math.round(st.pos * 16) === i) ? 'x' : '·')).join('');
+  const even = (t.evenness ?? 0) < 0.12;
+  return {
+    kind: 'row',
+    inst: 'wood',
+    loopBars: 1,
+    steps,
+    pattern: grid,
+    tone: { decay: 0.09 + 0.5 * clamp(size, 0.05, 0.35), body: clamp(1 - size * 2, 0.3, 1) },
+    rhythm: `×${steps.length}${even ? '' : '~'}`,
+    voice: noteName(steps[0] ? steps[0].midi : ROOT),
+    sig: `row:${grid}:${steps.map((st) => st.midi).join(',')}`,
+  };
+}
+
 export function specFor(t) {
   switch (t.type) {
     case 'STRIPE':
@@ -210,12 +248,14 @@ export function specFor(t) {
       return gridSpec(t);
     case 'DOTS':
       return dotsSpec(t);
+    case 'ROW':
+      return rowSpec(t);
     default:
       return droneSpec(t);
   }
 }
 
-const KIND_GAIN = { hat: 0.42, kick: 0.95, mallet: 0.5, blip: 0.45, drone: 0.3 };
+const KIND_GAIN = { hat: 0.42, kick: 0.95, mallet: 0.5, blip: 0.45, drone: 0.3, wood: 0.6 };
 
 /** Loop level from contrast and on-screen area. */
 export function levelFor(t, spec, view, area0 = t.w * t.h) {
