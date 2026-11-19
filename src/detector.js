@@ -41,7 +41,7 @@ export function familyOf(type) {
 }
 
 export const DETECTOR_DEFAULTS = Object.freeze({
-  sensitivity: 1.3, // >1 = more permissive (also loosens the ROW thresholds)
+  sensitivity: 1.8, // >1 = more permissive (also loosens the ROW thresholds)
   minContrast: 0.02, // grey std below this = blank cell
   minProminence: 20, // peak power / median power at the same radius
   minIsolation: 0.85, // share of the 5×5 bins around the peak that sits in its 3×3
@@ -69,10 +69,14 @@ export const DETECTOR_DEFAULTS = Object.freeze({
   smallProminence: 1000,
   smallIsolation: 0.85,
   smallRepeat: 0.7,
+  softCells: 3, // extra cells a region needs when most pass only by the sensitivity
   grow: true, // regions take in agreeing near-miss neighbours (extent only)
   rings: true,
   ringCells: 7,
   rows: true, // look for rows of similar things too
+  // the row search follows the sensitivity only up to here: beyond it,
+  // noise textures start to form rows (rowSensitivity overrides)
+  rowSensitivityMax: 1.3,
   // run the row search's passes in turns over this many frames (the others
   // reuse their previous result): 1 = all every frame (tests, benchmarks)
   rowSplit: 1,
@@ -432,8 +436,16 @@ export function createDetector(options = {}) {
     out.rep1 = rep1;
     const iso1 = isolation(peaks[main]);
     out.iso1 = iso1;
-    const isoNeed = (pr) => (pr * sens >= opt.strongProminence ? opt.minIsolationStrong : opt.minIsolation);
-    out.weak = rep1 < opt.minRepeat || iso1 < isoNeed(prom1);
+    // Above 1 the sensitivity also accepts smeared peaks and looser repeats:
+    // natural repetitions (tree rings, florets, scales, ripples) are only
+    // roughly regular. Measured on photos: isolation is what holds them back.
+    const loose = (sv) => Math.max(0, sv - 1);
+    const isoNeed = (pr, sv = sens) => (pr * sv >= opt.strongProminence
+      ? opt.minIsolationStrong - 0.2 * loose(sv) : opt.minIsolation - 0.25 * loose(sv));
+    const repNeed = opt.minRepeat - 0.1 * loose(sens);
+    out.weak = rep1 < repNeed || iso1 < isoNeed(prom1);
+    // passes only thanks to the loosening: such cells need company (below)
+    out.soft = !out.weak && (rep1 < opt.minRepeat || iso1 < isoNeed(prom1, 1));
     const rep2 = k2 ? repeats(img, iw, x0, y0, k2) : 0;
     out.rep2 = rep2;
     const iso2 = k2 ? isolation(peak2) : 0;
@@ -444,7 +456,7 @@ export function createDetector(options = {}) {
     // a second direction is where seams and noise fake a grid: above 1 the
     // sensitivity only partly applies to it
     const sens2 = Math.min(sens, 1.1);
-    const firm = prom1 * sens2 >= opt.minProminence &&
+    const firm = prom1 * sens2 >= opt.minProminence && rep1 >= opt.minRepeat &&
       iso1 >= (prom1 * sens2 >= opt.strongProminence ? opt.minIsolationStrong : opt.minIsolation);
     if (k2 && !out.weak && firm && e2 >= opt.latticeSecond * e1 && prom2 * sens2 >= opt.minProminence &&
         rep2 >= opt.minRepeat) {
@@ -476,7 +488,7 @@ export function createDetector(options = {}) {
 
     if (score1 * sens < opt.stripeScore && fail('score')) return out;
     // a weak stripe keeps its type for ring/ray fits and region growth
-    if (out.weak) out.fail = rep1 < opt.minRepeat ? 'repeat' : 'iso';
+    if (out.weak) out.fail = rep1 < repNeed ? 'repeat' : 'iso';
     out.type = TYPE.STRIPE;
     out.score = Math.min(1, score1);
     out.p1 = N / r1;
@@ -611,7 +623,7 @@ export function createDetector(options = {}) {
       if (!pyramid[L] || !dims[L]) return;
       if (split === 1 || i % split === rowFrame % split || !rowCache[i]) {
         const sc = opt.levels[L].scale || 2 ** L;
-        rowCache[i] = rowFinder.findInLevel(pyramid[L], dims[L][0], dims[L][1], sc, L, skip, opt.rowSensitivity ?? opt.sensitivity).map((r) => ({
+        rowCache[i] = rowFinder.findInLevel(pyramid[L], dims[L][0], dims[L][1], sc, L, skip, opt.rowSensitivity ?? Math.min(opt.sensitivity, opt.rowSensitivityMax)).map((r) => ({
           ...r, img: Float32Array.from(pyramid[L]), iw: dims[L][0],
         }));
       }
@@ -870,6 +882,10 @@ export function createDetector(options = {}) {
       // Lone lattice cells are usually two patterns sharing a cell: skip.
       // grown (weak) cells widen a region but do not make it count
       const strict = cs.length - (p.grown || 0);
+      // a region of loosely regular cells only counts when it is wide
+      // (bark, ripples, florets) — a few such cells are an edge or a fold
+      const firm = cs.filter((c) => !c.soft && !c.weak).length;
+      if (firm < band.minCells && strict < band.minCells + opt.softCells) continue;
       if (strict < band.minCells) {
         const mean = (f) => cs.reduce((s, c) => s + (c[f] || 0), 0) / cs.length;
         const gprom = Math.exp(cs.reduce((s, c) => s + Math.log(Math.max(1, c.prom || 1)), 0) / cs.length);
@@ -1051,8 +1067,11 @@ export function createDetector(options = {}) {
           if (overlap > 0.6 && ra < 0.25) drop.add(small);
           continue;
         }
-        if (overlap <= 0.5) continue;
         const pr = ratio(a.period, b.period);
+        // the same pattern seen at two levels: a coarse level's cells reach
+        // past the pattern's edge, so its box may stick out a long way
+        const same = pr < 1.1 && angleDiff(a.angle, b.angle) < 8;
+        if (overlap <= (same ? 0.25 : 0.5)) continue;
         if (pr < 1.4) {
           drop.add(weight(a) >= weight(b) ? j : i);
           continue;
