@@ -7,7 +7,7 @@ import { AudioEngine } from './audio.js';
 import { specFor, levelFor, panFor, fadeBarsFor } from './mapping.js';
 import { createRenderer } from './render.js';
 import { openCamera, createDemoSource } from './sources.js';
-import { drawPoster } from './poster.js';
+import { drawPoster, loadPoster } from './poster.js';
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
@@ -271,10 +271,19 @@ async function fontsReady() {
   }
 }
 
+let posterPromise = null;
+function posterSpec() {
+  posterPromise ??= loadPoster().catch((err) => {
+    posterPromise = null;
+    throw err;
+  });
+  return posterPromise;
+}
+
 async function demoSource() {
   if (!state.demo) {
-    await fontsReady();
-    state.demo = createDemoSource(drawPoster(1));
+    const [spec] = await Promise.all([posterSpec(), fontsReady()]);
+    state.demo = createDemoSource(drawPoster(spec, 1));
     state.demo.attach(viewEl);
   }
   return state.demo;
@@ -392,8 +401,8 @@ $('#file').addEventListener('change', async (e) => {
 });
 
 $('#save-poster').addEventListener('click', async () => {
-  await fontsReady();
-  const cv = drawPoster(2);
+  const [spec] = await Promise.all([posterSpec(), fontsReady()]);
+  const cv = drawPoster(spec, 2);
   cv.toBlob((blob) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);

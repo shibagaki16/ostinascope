@@ -1,6 +1,8 @@
 // Ostinascope — overlay drawing, in the grammar of a scientific plate:
 // hairlines, corner brackets, dimension lines, rulers, monospaced notes.
 
+import { TO_RAD } from './util.js';
+
 export const COLORS = {
   STRIPE: '#FFD21F',
   GRID: '#FF4B36',
@@ -10,7 +12,6 @@ export const COLORS = {
   ROW: '#5BE39B',
 };
 const FONT = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
-const DEG = Math.PI / 180;
 
 const pad2 = (n) => String(n % 100).padStart(2, '0');
 
@@ -144,7 +145,7 @@ export function createRenderer(canvas) {
     const cx = tr.cx * S;
     const cy = tr.cy * S;
     const p = tr.period * S;
-    const t = tr.angle * DEG;
+    const t = tr.angle * TO_RAD;
     const nx = Math.sin(t);
     const ny = Math.cos(t);
     const maxLen = Math.min(tr.w, tr.h) * S * 0.8;
@@ -179,12 +180,12 @@ export function createRenderer(canvas) {
       if (p >= 3) dimension(cx, cy, nx, ny, p, fit(p), color, alpha);
     } else if (tr.type === 'GRID') {
       const p2 = (tr.period2 || tr.period) * S;
-      const t2 = (tr.angle + (tr.latticeAngle || 90)) * DEG;
+      const t2 = (tr.angle + (tr.latticeAngle || 90)) * TO_RAD;
       if (p >= 3) dimension(cx, cy, nx, ny, p, Math.min(3, fit(p)), color, alpha);
       if (p2 >= 3) dimension(cx, cy, Math.sin(t2), Math.cos(t2), p2, Math.min(3, fit(p2)), color, alpha);
     } else if (tr.type === 'DOTS') {
       const p2 = (tr.period2 || tr.period) * S;
-      const t2 = (tr.angle + (tr.latticeAngle || 90)) * DEG;
+      const t2 = (tr.angle + (tr.latticeAngle || 90)) * TO_RAD;
       const ax = nx * p;
       const ay = ny * p;
       const bx = Math.sin(t2) * p2;

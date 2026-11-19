@@ -14,8 +14,8 @@
 //
 // Pure module (no DOM).
 
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-const DEG = 180 / Math.PI;
+import { clamp, TO_DEG as DEG } from './util.js';
+
 const NB = 6; // edge direction bins (0–180°)
 const ND = 9 * NB + 9; // descriptor length
 

@@ -17,12 +17,15 @@
 
 import { makePowerSpectrum } from './fft.js';
 import { createRowFinder } from './rows.js';
+import { regionColor } from './color.js';
+import { angleDiff, clamp, ratio, TO_DEG as DEG } from './util.js';
+
+export { angleDiff }; // part of the detector's API (tests, tracker)
 
 export const CELL = 32;
 const N = CELL;
 const NN = N * N;
 const HALF = N / 2;
-const DEG = 180 / Math.PI;
 
 export const TYPE = Object.freeze({
   STRIPE: 'STRIPE',
@@ -83,14 +86,6 @@ export const DETECTOR_DEFAULTS = Object.freeze({
 });
 
 const now = () => (globalThis.performance ? performance.now() : Date.now());
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-
-/** Undirected angle difference between two line orientations (deg). */
-export function angleDiff(a, b) {
-  let d = Math.abs(a - b) % 180;
-  return d > 90 ? 180 - d : d;
-}
-const ratio = (a, b) => (a > b ? a / b : b / a);
 
 export function createDetector(options = {}) {
   const opt = { ...DETECTOR_DEFAULTS, ...options };
@@ -1090,66 +1085,4 @@ export function createDetector(options = {}) {
   }
 
   return { analyze, setOptions, options: opt };
-}
-
-// Colour of the pattern inside a region: split pixels at the mean
-// luminance and take whichever half is more saturated (coloured ink on
-// paper, or black ink on coloured paper).
-export function regionColor(rgba, W, H, box) {
-  const x0 = Math.max(0, Math.floor(box.x));
-  const y0 = Math.max(0, Math.floor(box.y));
-  const x1 = Math.min(W, Math.ceil(box.x + box.w));
-  const y1 = Math.min(H, Math.ceil(box.y + box.h));
-  const step = Math.max(1, Math.round(Math.sqrt(((x1 - x0) * (y1 - y0)) / 1200)));
-  let n = 0;
-  let lsum = 0;
-  for (let y = y0; y < y1; y += step) {
-    for (let x = x0; x < x1; x += step) {
-      const j = (y * W + x) * 4;
-      lsum += 0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2];
-      n++;
-    }
-  }
-  if (!n) return { hue: 0, sat: 0, light: 0.5 };
-  const lm = lsum / n;
-  const acc = [
-    [0, 0, 0, 0],
-    [0, 0, 0, 0],
-  ];
-  for (let y = y0; y < y1; y += step) {
-    for (let x = x0; x < x1; x += step) {
-      const j = (y * W + x) * 4;
-      const l = 0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2];
-      const a = acc[l < lm ? 0 : 1];
-      a[0] += rgba[j];
-      a[1] += rgba[j + 1];
-      a[2] += rgba[j + 2];
-      a[3]++;
-    }
-  }
-  let best = { hue: 0, sat: 0, light: lm / 255 };
-  for (const a of acc) {
-    if (!a[3]) continue;
-    const hsv = rgbToHueSat(a[0] / a[3], a[1] / a[3], a[2] / a[3]);
-    if (hsv.sat > best.sat) best = hsv;
-  }
-  return best;
-}
-
-function rgbToHueSat(r, g, b) {
-  r /= 255;
-  g /= 255;
-  b /= 255;
-  const mx = Math.max(r, g, b);
-  const mn = Math.min(r, g, b);
-  const c = mx - mn;
-  let h = 0;
-  if (c > 1e-6) {
-    if (mx === r) h = ((g - b) / c) % 6;
-    else if (mx === g) h = (b - r) / c + 2;
-    else h = (r - g) / c + 4;
-    h *= 60;
-    if (h < 0) h += 360;
-  }
-  return { hue: h, sat: c, light: (mx + mn) / 2 };
 }

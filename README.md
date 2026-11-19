@@ -115,7 +115,7 @@
 | 間隔 → 拍の分割の境目、色 → 音高の表、音色 | `src/mapping.js` |
 | フェードの長さ | `fadeBarsFor`（`src/mapping.js`） |
 | 似たものの並びの閾値（似ている度合い・間隔のばらつき・最小個数…） | `ROW_DEFAULTS`（`src/rows.js`） |
-| デモポスターの構図 | `src/poster.js` |
+| デモポスターの構図・色 | `poster/poster.json`（要素の種類と描き方は `src/poster.js`） |
 
 ---
 
@@ -127,6 +127,7 @@ src/main.js         配線：取り込み → 解析 → 追跡 → 発音 → �
 src/analysis.js     解析の受け渡し（Worker が使えなければメインスレッドで）
 src/analysis-worker.js  Worker 側：detector を回す
 src/detector.js     繰り返しの検出（DOM 非依存、Node でテスト可）
+src/color.js        領域の色（→ 音高）
 src/rows.js         似たものの並びの検出
 src/fft.js          基数 2 FFT・実数画像のパワースペクトル
 src/tracker.js      時間方向の追跡（DOM 非依存）
@@ -134,9 +135,11 @@ src/mapping.js      パターン → ループ（純粋関数）
 src/audio.js        Web Audio エンジン
 src/render.js       オーバーレイ描画
 src/sources.js      カメラ／デモ画像
-src/poster.js       デモ用ポスター生成
+src/poster.js       ポスターの描画（要素の種類・項目・描き方）
+src/util.js         共通の小さな計算
+poster/poster.json  ポスターの紙面データ（配色と要素の並び）
 src/style.css
-test/               合成画像による検出テスト、追跡・マッピングのテスト
+test/               合成画像による検出テスト、追跡・マッピング・ポスターデータのテスト
 scripts/serve.py    開発サーバ（--https で LAN 向け自己署名 HTTPS）
 bench/              評価用ツール（下記）。写真や結果は bench/data/ に置かれ、git 管理外
 ```

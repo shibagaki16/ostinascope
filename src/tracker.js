@@ -7,7 +7,7 @@
 //   fading  lost — its loop fades out over 1–2 bars; can still be re-acquired
 // Pure module (no DOM).
 
-import { angleDiff } from './detector.js';
+import { angleDiff, lerp, TO_DEG as DEG } from './util.js';
 
 export const TRACKER_DEFAULTS = Object.freeze({
   confirmHits: 3, // consecutive-ish frames before a pattern may sound
@@ -22,8 +22,6 @@ export const TRACKER_DEFAULTS = Object.freeze({
   edgeMargin: 0.06,
 });
 
-const lerp = (a, b, t) => a + (b - a) * t;
-const DEG = 180 / Math.PI;
 
 export function createTracker(options = {}) {
   const opt = { ...TRACKER_DEFAULTS, ...options };
