@@ -1,16 +1,21 @@
 // Ostinascope — repetition detector.
 //
-// The frame is split into 32×32 cells at two scales (level 0 = full
-// analysis resolution, level 1 = half resolution, which sees structures
-// twice as large). Each cell is windowed and Fourier transformed; peaks in
-// the power spectrum tell us whether the cell repeats in one direction
-// (STRIPE) or two (GRID / DOTS). Neighbouring cells that agree are merged
-// into regions. Clusters of stripe cells whose orientation fans out around
-// a common point become CONCENTRIC or RADIAL.
+// The frame is cut into 32×32 cells that overlap by half, at four scales
+// (1×, 2×, 2.8×, 4× downsampled: each coarser level sees larger structures
+// and also fits more periods of a mid-sized pattern into one cell). Each
+// cell is windowed and Fourier transformed. A cell repeats when its
+// strongest spectral peak
+//   · stands far above the other frequencies at the same radius (prominence),
+//   · is a sharp spot rather than a lump (isolation),
+//   · and the image profile across it matches itself two periods on
+//     (at least three repeats — two parallel lines are not a pattern).
+// A second, non-parallel peak makes it a lattice (GRID / DOTS). Agreeing
+// neighbours are merged into regions; clusters of stripe cells whose
+// orientation fans out around a common point become CONCENTRIC or RADIAL.
 //
-// Pure module: no DOM access, so it runs in Node for the tests.
+// Pure module: no DOM access, so it runs in a worker and in Node for tests.
 
-import { makeFFT, fft2d } from './fft.js';
+import { makePowerSpectrum } from './fft.js';
 
 export const CELL = 32;
 const N = CELL;
@@ -34,22 +39,36 @@ export function familyOf(type) {
 
 export const DETECTOR_DEFAULTS = Object.freeze({
   sensitivity: 1, // >1 = more permissive
-  minContrast: 0.025, // grey std below this = blank cell
-  stripeScore: 0.4, // share of spectral energy in one direction (+harmonics)
-  latticeScore: 0.45, // share of energy in the two lattice directions
+  minContrast: 0.02, // grey std below this = blank cell
+  minProminence: 20, // peak power / median power at the same radius
+  minIsolation: 0.85, // share of the 5×5 bins around the peak that sits in its 3×3
+  // A peak far above its background may be less sharp (wavy wire, a sheet
+  // in perspective): from strongProminence on, minIsolationStrong applies.
+  strongProminence: 100,
+  minIsolationStrong: 0.7,
+  minRepeat: 0.35, // profile self-correlation two periods on (≥ 3 repeats)
+  repTolerance: 0.15, // the lag may stretch this much (perspective)
+  stripeScore: 0.2, // share of energy at/above the pattern's frequency in one direction
+  latticeScore: 0.3, // same, for the two lattice directions
   latticeSecond: 0.2, // 2nd direction must hold this fraction of the 1st
   dotsCross: 0.15, // cross terms (k1±k2) vs fundamentals: dots vs grid lines
-  minProminence: 40, // peak power / median power at the same radius
-  minRepeat: 0.4, // profile self-correlation two periods on (≥ 3 repeats)
-  // Accepted peak radius (cycles per cell) per level. Level 1 continues
-  // where level 0 stops, so periods from ~2.7 to ~25 px are covered.
+  stride: 16, // cells overlap by half
+  // Per level: downsampling, accepted peak radius (cycles per cell), and
+  // how many cells a region needs. Together they cover periods from ~2.7
+  // to ~55 px of a 192 px short side (1.4%–29% of the screen width).
   levels: [
-    { rmin: 2.8, rmax: 12 },
-    { rmin: 2.5, rmax: 6.4 },
+    { scale: 1, rmin: 2.8, rmax: 12, minCells: 3 },
+    { scale: 2, rmin: 2.5, rmax: 6.4, minCells: 2 },
+    { scale: 2 * Math.SQRT2, rmin: 2.5, rmax: 4.8, minCells: 2 },
+    { scale: 4, rmin: 2.3, rmax: 4.8, minCells: 1 },
   ],
-  minCells: 2,
-  singleCellScore: 0.62, // a lone level-1 cell needs to be this clean
+  // a region smaller than its level's minCells must be this clear
+  smallProminence: 1000,
+  smallIsolation: 0.85,
+  smallRepeat: 0.7,
+  grow: true, // regions take in agreeing near-miss neighbours (extent only)
   rings: true,
+  ringCells: 7,
 });
 
 const now = () => (globalThis.performance ? performance.now() : Date.now());
@@ -64,10 +83,9 @@ const ratio = (a, b) => (a > b ? a / b : b / a);
 
 export function createDetector(options = {}) {
   const opt = { ...DETECTOR_DEFAULTS, ...options };
-  const fft = makeFFT(N);
-  const re = new Float32Array(NN);
-  const im = new Float32Array(NN);
-  const P = new Float32Array(NN);
+  const power = makePowerSpectrum(N);
+  const work = new Float64Array(NN);
+  const P = new Float64Array(NN);
   const mask = new Uint8Array(NN);
   const win = new Float32Array(NN);
   const R = new Float32Array(NN);
@@ -92,7 +110,9 @@ export function createDetector(options = {}) {
     }
   }
 
-  const bin = (kx, ky) => (((ky % N) + N) % N) * N + (((kx % N) + N) % N);
+  // N is a power of two, so wrapping a (possibly negative) index is a mask
+  const MASK = N - 1;
+  const bin = (kx, ky) => (ky & MASK) * N + (kx & MASK);
 
   // 8 neighbours of every candidate bin, precomputed for the peak search.
   const nbr = new Int32Array(cand.length * 8);
@@ -154,33 +174,63 @@ export function createDetector(options = {}) {
   // Does the cell repeat itself two periods further along k? The profile
   // across the stripes must correlate with itself at a lag of 2p. Two
   // parallel lines (a frame and an edge…) correlate at p but never at 2p,
-  // so this demands at least three repeats.
-  const profS = new Float32Array(2 * N + 2);
-  const profC = new Float32Array(2 * N + 2);
+  // so this demands at least three repeats. The profile is weighted like
+  // the FFT window (the centre of the cell counts most) and sampled at
+  // half-pixel resolution so fine stripes (p ≈ 3) are not smeared; the lag
+  // may stretch a little, since perspective makes the period drift.
+  const PB = 2;
+  const profS = new Float32Array(PB * (2 * N + 2));
+  const profC = new Float32Array(PB * (2 * N + 2));
   function repeats(img, iw, x0, y0, k) {
     const r = Math.hypot(k.x, k.y);
-    const nx = k.x / r;
-    const ny = k.y / r;
-    const p = N / r;
+    const nx = (PB * k.x) / r;
+    const ny = (PB * k.y) / r;
+    const p = (PB * N) / r; // period, in profile bins
     profS.fill(0);
     profC.fill(0);
     const c = (N - 1) / 2;
+    const base = PB * N;
     for (let y = 0; y < N; y++) {
       const row = (y0 + y) * iw + x0;
-      const ty = (y - c) * ny + N;
+      const ty = (y - c) * ny + base;
       for (let x = 0; x < N; x++) {
         const b = ((x - c) * nx + ty) | 0;
-        profS[b] += img[row + x];
-        profC[b]++;
+        const w = 0.15 + win[y * N + x];
+        profS[b] += w * img[row + x];
+        profC[b] += w;
       }
     }
-    let span = 0;
+    const minC = 0.5;
+    let first = -1;
+    let last = -1;
     for (let b = 0; b < profS.length; b++) {
-      profS[b] = profC[b] >= 3 ? profS[b] / profC[b] : NaN;
-      if (profC[b] >= 3) span++;
+      if (profC[b] >= minC) {
+        profS[b] /= profC[b];
+        if (first < 0) first = b;
+        last = b;
+      } else profS[b] = NaN;
     }
+    // at half-pixel resolution an axis-aligned profile has empty bins
+    // between rows: fill them from their neighbours
+    for (let b = first + 1; b < last; b++) {
+      if (profS[b] === profS[b]) continue;
+      let e = b + 1;
+      while (e < last && !(profS[e] === profS[e])) e++;
+      const a = profS[b - 1];
+      const z = profS[e];
+      for (let k = b; k < e; k++) profS[k] = a + ((z - a) * (k - b + 1)) / (e - b + 1);
+      b = e;
+    }
+    const span = first < 0 ? 0 : last - first + 1;
     // two periods on if that still leaves a useful overlap, else one
-    const lag = span - 2 * p >= 8 ? 2 * p : p;
+    const lag = span - 2 * p >= 8 * PB ? 2 * p : p;
+    const tol = opt.repTolerance;
+    if (!(tol > 0)) return corrAt(lag);
+    let best = -1;
+    for (let f = 1 - tol; f <= 1 + tol + 1e-9; f += tol / 2) best = Math.max(best, corrAt(lag * f));
+    return best;
+  }
+  function corrAt(lag) {
     let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
     for (let b = 0; b < profS.length; b++) {
       const a = profS[b];
@@ -197,7 +247,25 @@ export function createDetector(options = {}) {
     const cov = sab - (sa * sb) / n;
     const va = saa - (sa * sa) / n;
     const vb = sbb - (sb * sb) / n;
-    return va > 1e-9 && vb > 1e-9 ? cov / Math.sqrt(va * vb) : 0;
+    if (!(va > 1e-9 && vb > 1e-9)) return 0;
+    // one side (nearly) blank paper: its "correlation" is just noise
+    if (Math.min(va, vb) < 0.03 * Math.max(va, vb)) return 0;
+    return cov / Math.sqrt(va * vb);
+  }
+
+  // 3×3 vs 5×5 energy around a peak: a repetition is a sharp spot, a
+  // texture's lumps are wider.
+  function isolation(i) {
+    let e3 = 0;
+    let e5 = 0;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const p = P[bin(KX[i] + dx, KY[i] + dy)];
+        e5 += p;
+        if (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1) e3 += p;
+      }
+    }
+    return e5 > 0 ? e3 / e5 : 0;
   }
 
   // Sub-bin peak position: parabola through log power on each axis.
@@ -239,38 +307,32 @@ export function createDetector(options = {}) {
   // Line orientation in degrees, 0..180, counter-clockwise from screen +x.
   const lineAngle = (k) => (((Math.atan2(-k.x, -k.y) * DEG) % 180) + 180) % 180;
 
-  function analyzeCell(img, iw, x0, y0, band, th) {
+  function analyzeCell(img, iw, x0, y0, band) {
     let s = 0;
     let s2 = 0;
     for (let y = 0; y < N; y++) {
       const row = (y0 + y) * iw + x0;
       for (let x = 0; x < N; x++) {
         const v = img[row + x];
-        re[y * N + x] = v;
+        work[y * N + x] = v;
         s += v;
         s2 += v * v;
       }
     }
     const mean = s / NN;
     const std = Math.sqrt(Math.max(0, s2 / NN - mean * mean));
-    const out = { type: null, score: 0, contrast: clamp(std * 2.5, 0, 1), std };
-    if (std < opt.minContrast) return out;
+    const out = { type: null, score: 0, contrast: clamp(std * 2.5, 0, 1), std, fail: null };
+    // first gate the cell fails, kept for the debug view
+    const fail = (why) => {
+      out.fail = why;
+      return true;
+    };
+    if (std < opt.minContrast && fail('blank')) return out;
 
-    for (let i = 0; i < NN; i++) {
-      re[i] = (re[i] - mean) * win[i];
-      im[i] = 0;
-    }
-    fft2d(fft, re, im);
+    for (let i = 0; i < NN; i++) work[i] = (work[i] - mean) * win[i];
+    power(work, P);
 
     rE = Math.max(1.5, band.rmin - 1);
-    let total = 0;
-    for (let i = 0; i < NN; i++) {
-      const p = re[i] * re[i] + im[i] * im[i];
-      P[i] = p;
-      if (R[i] >= rE) total += p;
-    }
-    const half = total / 2;
-    if (!(half > 0)) return out;
 
     // Local maxima of the power spectrum (8-neighbourhood).
     peaks.length = 0;
@@ -287,7 +349,7 @@ export function createDetector(options = {}) {
         P[nbr[o + 4]] + P[nbr[o + 5]] + P[nbr[o + 6]] + P[nbr[o + 7]];
       peaks.push(i);
     }
-    if (!peaks.length) return out;
+    if (!peaks.length && fail('band')) return out;
     // Rank by 3×3 energy: a peak between bins spreads out, and its single
     // centre bin would otherwise lose to a harmonic that sits on a bin.
     peaks.sort((a, b) => peakE[b] - peakE[a]);
@@ -310,17 +372,30 @@ export function createDetector(options = {}) {
     }
 
     // The strongest repetition must fall in this level's band; anything
-    // coarser or finer is left to the other level.
+    // coarser or finer is left to the other levels.
     const r1 = Math.hypot(k1.x, k1.y);
-    if (r1 < band.rmin || r1 > band.rmax) return out;
+    out.r1 = r1;
+    if ((r1 < band.rmin || r1 > band.rmax) && fail('band')) return out;
     const a1 = lineAngle(k1);
+
+    // Energy the shares are measured against. Natural images carry most of
+    // their energy at low frequencies (shading, large edges), so everything
+    // well below the pattern's own frequency is left out.
+    const rHi = Math.max(rE, 0.6 * r1);
+    let total = 0;
+    for (let i = 0; i < NN; i++) if (R[i] >= rHi) total += P[i];
+    const half = total / 2;
+    if (!(half > 0) && fail('band')) return out;
+
     excludePeaks(Math.min(6, peaks.length));
     const prom1 = prominence(peaks[main], k1);
     out.prom = prom1;
-    if (prom1 * opt.sensitivity < opt.minProminence) return out;
+    const sens = opt.sensitivity;
+    if (prom1 * sens < opt.minProminence && fail('prom')) return out;
 
     // Second, non-parallel direction (for grids and dot lattices).
     let k2 = null;
+    let peak2 = -1;
     let prom2 = 0;
     for (let j = 0; j < Math.min(peaks.length, 8); j++) {
       if (j === main) continue;
@@ -328,6 +403,7 @@ export function createDetector(options = {}) {
       if (angleDiff(lineAngle(k), a1) < 20) continue;
       if (Math.hypot(k.x - k1.x, k.y - k1.y) < 2) continue;
       k2 = k;
+      peak2 = peaks[j];
       prom2 = prominence(peaks[j], k);
       out.prom2 = prom2;
       break;
@@ -340,17 +416,24 @@ export function createDetector(options = {}) {
     const h1 = energyAt(2 * k1.x, 2 * k1.y) + energyAt(3 * k1.x, 3 * k1.y);
     out.sharp = sharpKnown && e1 > 0 ? clamp(Math.sqrt(h1 / e1) / 0.6, 0, 1) : NaN;
 
-    const sens = opt.sensitivity;
-    // Fails the three-repeats test: kept as a "weak" stripe, which may only
-    // take part in concentric/radial fits (rays fan out, so their spacing
-    // drifts within a cell), never form a STRIPE region on its own.
+    // Fails the three-repeats or the isolation test: kept as a "weak"
+    // stripe, which may take part in concentric/radial fits (rays fan out,
+    // rings curve, so their peaks smear) and widen a region, but never
+    // start a region on its own.
     const rep1 = repeats(img, iw, x0, y0, k1);
     out.rep1 = rep1;
-    out.weak = rep1 < opt.minRepeat;
-    const rep2 = k2 && !out.weak ? repeats(img, iw, x0, y0, k2) : 0;
+    const iso1 = isolation(peaks[main]);
+    out.iso1 = iso1;
+    const isoNeed = (pr) => (pr * sens >= opt.strongProminence ? opt.minIsolationStrong : opt.minIsolation);
+    out.weak = rep1 < opt.minRepeat || iso1 < isoNeed(prom1);
+    const rep2 = k2 ? repeats(img, iw, x0, y0, k2) : 0;
     out.rep2 = rep2;
+    const iso2 = k2 ? isolation(peak2) : 0;
+    out.iso2 = iso2;
+    const score1 = (e1 + h1) / half;
+    out.score1 = score1;
 
-    if (k2 && !out.weak && e2 >= opt.latticeSecond * e1 && prom2 * opt.sensitivity >= opt.minProminence &&
+    if (k2 && !out.weak && e2 >= opt.latticeSecond * e1 && prom2 * sens >= opt.minProminence &&
         rep2 >= opt.minRepeat) {
       const h2 = energyAt(2 * k2.x, 2 * k2.y);
       const cp = energyAt(k1.x + k2.x, k1.y + k2.y);
@@ -378,60 +461,104 @@ export function createDetector(options = {}) {
       }
     }
 
-    const score1 = (e1 + h1) / half;
-    if (score1 * sens >= opt.stripeScore) {
-      out.type = TYPE.STRIPE;
-      out.score = Math.min(1, score1);
-      out.p1 = N / r1;
-      out.a1 = a1;
-    }
+    if (score1 * sens < opt.stripeScore && fail('score')) return out;
+    // a weak stripe keeps its type for ring/ray fits and region growth
+    if (out.weak) out.fail = rep1 < opt.minRepeat ? 'repeat' : 'iso';
+    out.type = TYPE.STRIPE;
+    out.score = Math.min(1, score1);
+    out.p1 = N / r1;
+    out.a1 = a1;
     return out;
   }
 
   // ---------------------------------------------------------------------
 
-  let gray0 = new Float32Array(0);
-  let gray1 = new Float32Array(0);
+  // Grey pyramid. Each level is made from the closest finer one: a 2×2 box
+  // for an exact halving, an area-weighted resample otherwise.
+  const pyramid = [];
+  const dims = [];
+  let rowBuf = new Float32Array(0);
+  function boxHalf(src, sw, dst, w, h) {
+    for (let y = 0; y < h; y++) {
+      const a = 2 * y * sw;
+      const b = a + sw;
+      for (let x = 0; x < w; x++) {
+        const xx = 2 * x;
+        dst[y * w + x] = 0.25 * (src[a + xx] + src[a + xx + 1] + src[b + xx] + src[b + xx + 1]);
+      }
+    }
+  }
+  // 1-D area resample of n samples (stride st) by factor f > 1 into m outputs.
+  function area1d(src, s0, st, n, dst, d0, dst_st, m, f) {
+    for (let i = 0; i < m; i++) {
+      const a = i * f;
+      const b = Math.min(n, a + f);
+      let acc = 0;
+      let j = Math.floor(a);
+      for (; j < b; j++) {
+        const lo = Math.max(a, j);
+        const hi = Math.min(b, j + 1);
+        acc += (hi - lo) * src[s0 + j * st];
+      }
+      dst[d0 + i * dst_st] = acc / (b - a);
+    }
+  }
+  function resample(src, sw, sh, dst, w, h, f) {
+    if (rowBuf.length < w * sh) rowBuf = new Float32Array(w * sh);
+    for (let y = 0; y < sh; y++) area1d(src, y * sw, 1, sw, rowBuf, y * w, 1, w, f);
+    for (let x = 0; x < w; x++) area1d(rowBuf, x, w, sh, dst, x, w, h, f);
+  }
+  function grayLevels(rgba, W, H) {
+    if (!pyramid[0] || pyramid[0].length !== W * H) pyramid[0] = new Float32Array(W * H);
+    const g0 = pyramid[0];
+    for (let i = 0, j = 0; i < W * H; i++, j += 4) {
+      g0[i] = (0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2]) / 255;
+    }
+    dims[0] = [W, H];
+    const scales = opt.levels.map((l, i) => l.scale || 2 ** i);
+    for (let L = 1; L < scales.length; L++) {
+      // halve an earlier level when one is exactly 2× finer, else resample
+      // from the full-resolution image
+      let from = 0;
+      for (let k = 0; k < L; k++) if (Math.abs(scales[L] / scales[k] - 2) < 1e-6) from = k;
+      const f = scales[L] / scales[from];
+      const [sw, sh] = dims[from];
+      const w = Math.floor(W / scales[L]);
+      const h = Math.floor(H / scales[L]);
+      if (!pyramid[L] || pyramid[L].length !== w * h) pyramid[L] = new Float32Array(w * h);
+      if (Math.abs(f - 2) < 1e-6 && w <= sw >> 1 && h <= sh >> 1) boxHalf(pyramid[from], sw, pyramid[L], w, h);
+      else resample(pyramid[from], sw, sh, pyramid[L], w, h, f);
+      dims[L] = [w, h];
+    }
+    return dims;
+  }
 
   function analyze(rgba, W, H) {
     const t0 = now();
-    if (gray0.length !== W * H) gray0 = new Float32Array(W * H);
-    for (let i = 0, j = 0; i < W * H; i++, j += 4) {
-      gray0[i] = (0.299 * rgba[j] + 0.587 * rgba[j + 1] + 0.114 * rgba[j + 2]) / 255;
-    }
-    const W1 = W >> 1;
-    const H1 = H >> 1;
-    if (gray1.length !== W1 * H1) gray1 = new Float32Array(W1 * H1);
-    for (let y = 0; y < H1; y++) {
-      const a = 2 * y * W;
-      const b = a + W;
-      for (let x = 0; x < W1; x++) {
-        const xx = 2 * x;
-        gray1[y * W1 + x] = 0.25 * (gray0[a + xx] + gray0[a + xx + 1] + gray0[b + xx] + gray0[b + xx + 1]);
-      }
-    }
-
+    const dims = grayLevels(rgba, W, H);
+    const S = Math.min(N, Math.max(4, opt.stride | 0));
     const levels = [];
     const regions = [];
-    for (let L = 0; L < opt.levels.length && L < 2; L++) {
-      const img = L ? gray1 : gray0;
-      const iw = L ? W1 : W;
-      const ih = L ? H1 : H;
-      const cols = Math.floor(iw / N);
-      const rows = Math.floor(ih / N);
-      const ox = (iw - cols * N) >> 1;
-      const oy = (ih - rows * N) >> 1;
-      const sc = 1 << L;
+    for (let L = 0; L < opt.levels.length; L++) {
+      const img = pyramid[L];
+      const [iw, ih] = dims[L];
+      const cols = Math.floor((iw - N) / S) + 1;
+      const rows = Math.floor((ih - N) / S) + 1;
+      if (cols < 1 || rows < 1) break;
+      const ox = (iw - ((cols - 1) * S + N)) >> 1;
+      const oy = (ih - ((rows - 1) * S + N)) >> 1;
+      const sc = opt.levels[L].scale || 2 ** L;
       const cells = new Array(cols * rows);
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-          const cell = analyzeCell(img, iw, ox + c * N, oy + r * N, opt.levels[L], opt);
+          const cell = analyzeCell(img, iw, ox + c * S, oy + r * S, opt.levels[L]);
           cell.level = L;
           cell.col = c;
           cell.row = r;
           cell.size = N * sc;
-          cell.x = (ox + c * N) * sc;
-          cell.y = (oy + r * N) * sc;
+          cell.core = (S < N ? 0.75 * N : N) * sc;
+          cell.x = (ox + c * S) * sc;
+          cell.y = (oy + r * S) * sc;
           cell.cx = cell.x + cell.size / 2;
           cell.cy = cell.y + cell.size / 2;
           if (cell.p1) cell.p1 *= sc;
@@ -439,7 +566,7 @@ export function createDetector(options = {}) {
           cells[r * cols + c] = cell;
         }
       }
-      const lv = { level: L, cols, rows, size: N * sc, cells };
+      const lv = { level: L, scale: sc, cols, rows, size: N * sc, step: S * sc, cells };
       levels.push(lv);
       regions.push(...buildRegions(lv));
     }
@@ -543,15 +670,21 @@ export function createDetector(options = {}) {
   }
 
   function summarize(cs, type, lv) {
-    let sw = 0, lp = 0, lp2 = 0, ca = 0, sa = 0, ang2 = 0, contrast = 0, score = 0;
-    let sharp = 0, sharpW = 0, dotsW = 0, gridW = 0;
+    let sw = 0, gw = 0, lp = 0, lp2 = 0, ca = 0, sa = 0, ang2 = 0, contrast = 0, score = 0;
+    let sharp = 0, sharpW = 0, dotsW = 0, gridW = 0, lprom = 0, iso = 0, rep = 0;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    // A lattice region's spacings and angles come from its lattice cells
+    // only: stripe cells it took in (rims, grown) see just one direction.
+    const lattice = type === 'lattice';
     for (const c of cs) {
       const w = Math.max(c.score, 1e-3);
       sw += w;
-      lp += w * Math.log(c.p1);
-      ca += w * Math.cos((2 * c.a1) / DEG);
-      sa += w * Math.sin((2 * c.a1) / DEG);
+      if (!lattice || c.p2) {
+        gw += w;
+        lp += w * Math.log(c.p1);
+        ca += w * Math.cos((2 * c.a1) / DEG);
+        sa += w * Math.sin((2 * c.a1) / DEG);
+      }
       if (c.p2) {
         lp2 += w * Math.log(c.p2);
         ang2 += w * angleDiff(c.a1, c.a2);
@@ -560,14 +693,17 @@ export function createDetector(options = {}) {
       }
       contrast += w * c.contrast;
       score += c.score;
+      lprom += Math.log(Math.max(1, c.prom || 1));
+      iso += c.iso1 || 0;
+      rep += c.rep1 || 0;
       if (Number.isFinite(c.sharp)) {
         sharp += w * c.sharp;
         sharpW += w;
       }
-      x0 = Math.min(x0, c.x);
-      y0 = Math.min(y0, c.y);
-      x1 = Math.max(x1, c.x + c.size);
-      y1 = Math.max(y1, c.y + c.size);
+      x0 = Math.min(x0, c.cx - c.core / 2);
+      y0 = Math.min(y0, c.cy - c.core / 2);
+      x1 = Math.max(x1, c.cx + c.core / 2);
+      y1 = Math.max(y1, c.cy + c.core / 2);
     }
     if (type === 'lattice') type = dotsW > gridW ? TYPE.DOTS : TYPE.GRID;
     const reg = {
@@ -582,19 +718,23 @@ export function createDetector(options = {}) {
       h: y1 - y0,
       cx: (x0 + x1) / 2,
       cy: (y0 + y1) / 2,
-      period: Math.exp(lp / sw),
+      period: Math.exp(lp / gw),
       angle: ((((Math.atan2(sa, ca) * DEG) / 2) % 180) + 180) % 180,
-      coherence: Math.hypot(ca, sa) / sw,
+      coherence: Math.hypot(ca, sa) / gw,
       score: score / cs.length,
       contrast: contrast / sw,
       sharp: sharpW ? sharp / sharpW : 0.5,
       cellRefs: cs.map((c) => [c.col, c.row]),
+      // evidence: geometric-mean prominence, mean isolation and repeat
+      prom: Math.exp(lprom / cs.length),
+      iso: iso / cs.length,
+      rep: rep / cs.length,
     };
     if (reg.family === 'lattice') {
-      reg.dirs = cs.flatMap((c) => [[c.p1, c.a1], [c.p2, c.a2]]);
-      reg.period2 = Math.exp(lp2 / sw);
+      reg.dirs = cs.flatMap((c) => (c.p2 ? [[c.p1, c.a1], [c.p2, c.a2]] : [[c.p1, c.a1]]));
+      reg.period2 = Math.exp(lp2 / gw);
       reg.ratio = reg.period / reg.period2;
-      reg.latticeAngle = ang2 / sw;
+      reg.latticeAngle = ang2 / gw;
     }
     return reg;
   }
@@ -607,7 +747,7 @@ export function createDetector(options = {}) {
     if (opt.rings) {
       const groups = components(lv, (i) => cells[i].type === TYPE.STRIPE, looseCompat, true);
       for (const g of groups) {
-        if (g.length < 5) continue;
+        if (g.length < opt.ringCells) continue;
         const cs = g.map((i) => cells[i]);
         const bins = new Set(cs.map((c) => Math.floor(c.a1 / 20) % 9));
         if (bins.size < 3) continue;
@@ -637,8 +777,11 @@ export function createDetector(options = {}) {
         for (const c of cs) spread = Math.max(spread, Math.hypot(c.cx - mx, c.cy - my));
         if (Math.hypot(best.x - mx, best.y - my) > 2.5 * spread + lv.size) continue;
         if (type === TYPE.CONCENTRIC) {
-          const ps = cs.map((c) => c.p1);
-          if (Math.max(...ps) / Math.min(...ps) > 1.7) continue;
+          // rings keep their spacing; a few odd cells (the curved centre,
+          // the rim) may not, so compare the 10th and 90th percentiles
+          const ps = cs.map((c) => c.p1).sort((a, b) => a - b);
+          const q = (f) => ps[Math.min(ps.length - 1, Math.floor(f * ps.length))];
+          if (q(0.9) / q(0.1) > 1.7) continue;
         }
         const reg = summarize(cs, type, lv);
         reg.center = { x: best.x, y: best.y };
@@ -655,32 +798,67 @@ export function createDetector(options = {}) {
     parts = parts.filter((p) => !(p.lattice && p.cs.length <= 3 && isSeam(lv, p.g)));
     // A stray line through a pattern splits it; bridge gaps under a cell.
     bridgeGaps(parts, lv);
+    // Hysteresis: a region may take in neighbouring cells that only just
+    // failed (weak) when they agree with it — the ragged rim of a fence,
+    // a sheet in perspective. Weak cells never start a region.
+    if (opt.grow) growParts(parts, lv, used);
 
+    const band = opt.levels[lv.level];
     for (const p of parts) {
       const cs = p.cs;
       const lattice = p.lattice;
-      const meanScore = cs.reduce((s, c) => s + c.score, 0) / cs.length;
-      // A lone (large, level-1) cell may stand on its own only when it is
-      // very clean: high score and peaks far above the background.
-      const strong = (c) => c.prom * opt.sensitivity >= 3 * opt.minProminence &&
-        (!lattice || c.prom2 * opt.sensitivity >= 3 * opt.minProminence);
+      // A region smaller than this level's minimum stands on its own only
+      // when its peaks are far above the background and clearly repeat.
       // Lone lattice cells are usually two patterns sharing a cell: skip.
-      const enough =
-        cs.length >= opt.minCells ||
-        (lv.level >= 1 && !lattice && meanScore * opt.sensitivity >= opt.singleCellScore && strong(cs[0]));
-      if (!enough) continue;
+      // grown (weak) cells widen a region but do not make it count
+      const strict = cs.length - (p.grown || 0);
+      if (strict < band.minCells) {
+        const mean = (f) => cs.reduce((s, c) => s + (c[f] || 0), 0) / cs.length;
+        const gprom = Math.exp(cs.reduce((s, c) => s + Math.log(Math.max(1, c.prom || 1)), 0) / cs.length);
+        const strong = gprom * opt.sensitivity >= opt.smallProminence && mean('iso1') >= opt.smallIsolation &&
+          mean('rep1') >= opt.smallRepeat && (!lattice || cs.length >= 2);
+        if (!strong) continue;
+      }
       out.push(summarize(cs, lattice ? 'lattice' : TYPE.STRIPE, lv));
     }
     return out;
   }
 
+  function growParts(parts, lv, used) {
+    const { cols, rows, cells } = lv;
+    const taken = new Uint8Array(cells.length);
+    for (const p of parts) for (const i of p.g) taken[i] = 1;
+    for (const p of parts) {
+      const m = partMean(p);
+      const dirs = p.lattice ? [[m.p1, m.a1], [m.p2, m.a2]] : [[m.p1, m.a1]];
+      const fits = (c) => c.type === TYPE.STRIPE && c.weak &&
+        dirs.some(([pp, aa]) => ratio(c.p1, pp) < 1.2 && angleDiff(c.a1, aa) < 15);
+      for (let q = 0; q < p.g.length; q++) {
+        const cur = p.g[q];
+        const x = cur % cols;
+        const y = (cur / cols) | 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= cols || yy >= rows) continue;
+          const j = yy * cols + xx;
+          if (taken[j] || used[j] || !fits(cells[j])) continue;
+          taken[j] = 1;
+          p.g.push(j);
+          p.cs.push(cells[j]);
+          p.grown = (p.grown || 0) + 1;
+        }
+      }
+    }
+  }
+
   function partBox(p) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const c of p.cs) {
-      x0 = Math.min(x0, c.x);
-      y0 = Math.min(y0, c.y);
-      x1 = Math.max(x1, c.x + c.size);
-      y1 = Math.max(y1, c.y + c.size);
+      x0 = Math.min(x0, c.cx - c.core / 2);
+      y0 = Math.min(y0, c.cy - c.core / 2);
+      x1 = Math.max(x1, c.cx + c.core / 2);
+      y1 = Math.max(y1, c.cy + c.core / 2);
     }
     return { x0, y0, x1, y1 };
   }
@@ -690,19 +868,26 @@ export function createDetector(options = {}) {
     return A.x0 - gap < B.x1 && B.x0 - gap < A.x1 && A.y0 - gap < B.y1 && B.y0 - gap < A.y1;
   }
   function partMean(p) {
-    let w = 0, lp = 0, lp2 = 0, ca = 0, sa = 0;
+    let w = 0, lp = 0, lp2 = 0, ca = 0, sa = 0, ca2 = 0, sa2 = 0, w2 = 0;
     for (const c of p.cs) {
       const k = Math.max(c.score, 1e-3);
       w += k;
       lp += k * Math.log(c.p1);
-      if (c.p2) lp2 += k * Math.log(c.p2);
       ca += k * Math.cos((2 * c.a1) / DEG);
       sa += k * Math.sin((2 * c.a1) / DEG);
+      if (c.p2) {
+        w2 += k;
+        lp2 += k * Math.log(c.p2);
+        ca2 += k * Math.cos((2 * c.a2) / DEG);
+        sa2 += k * Math.sin((2 * c.a2) / DEG);
+      }
     }
+    const ang = (c, s) => ((((Math.atan2(s, c) * DEG) / 2) % 180) + 180) % 180;
     return {
       p1: Math.exp(lp / w),
-      p2: p.lattice ? Math.exp(lp2 / w) : 0,
-      a1: ((((Math.atan2(sa, ca) * DEG) / 2) % 180) + 180) % 180,
+      p2: w2 ? Math.exp(lp2 / w2) : 0,
+      a1: ang(ca, sa),
+      a2: w2 ? ang(ca2, sa2) : 0,
     };
   }
 
@@ -795,13 +980,28 @@ export function createDetector(options = {}) {
       for (let j = i + 1; j < regions.length; j++) {
         const a = regions[i];
         const b = regions[j];
-        if (a.level === b.level || a.family !== b.family) continue;
+        if (a.family !== b.family) continue;
         const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
         const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
         const overlap = (ix * iy) / Math.min(a.w * a.h, b.w * b.h);
-        if (overlap > 0.5 && ratio(a.period, b.period) < 1.4) {
-          drop.add(weight(a) >= weight(b) ? j : i);
+        if (a.level === b.level) {
+          // a small patch inside a much larger region of the same kind is a
+          // local hiccup of that region (a stray line crossing it…)
+          const small = a.w * a.h < b.w * b.h ? i : j;
+          const ra = Math.min(a.w * a.h, b.w * b.h) / Math.max(a.w * a.h, b.w * b.h);
+          if (overlap > 0.6 && ra < 0.25) drop.add(small);
+          continue;
         }
+        if (overlap <= 0.5) continue;
+        const pr = ratio(a.period, b.period);
+        if (pr < 1.4) {
+          drop.add(weight(a) >= weight(b) ? j : i);
+          continue;
+        }
+        // a finer level locked onto a harmonic of a coarse pattern
+        const harmonic = [2, 3].some((m) => Math.abs(pr / m - 1) < 0.12) &&
+          (a.family !== 'line' || angleDiff(a.angle, b.angle) < 10);
+        if (harmonic) drop.add(a.period < b.period ? i : j);
       }
     }
     return regions.filter((_, i) => !drop.has(i));

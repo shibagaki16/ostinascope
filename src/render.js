@@ -302,17 +302,21 @@ export function createRenderer(canvas) {
   function drawGrid(res, k, S, bounds) {
     if (!res || !res.levels[0]) return;
     const lv = res.levels[0];
-    const c0 = lv.cells[0];
-    if (!c0) return;
+    const o = lv.origin || lv.cells[0];
+    if (!o) return;
+    // marks one cell apart over the analysed area (cells overlap by half,
+    // so the area is (cols-1)·step + size wide)
     const step = lv.size * k;
-    const ox = c0.x * k;
-    const oy = c0.y * k;
+    const ox = o.x * k;
+    const oy = o.y * k;
+    const nc = Math.round(((lv.cols - 1) * (lv.step || lv.size) + lv.size) / lv.size);
+    const nr = Math.round(((lv.rows - 1) * (lv.step || lv.size) + lv.size) / lv.size);
     ctx.save();
     ctx.strokeStyle = 'rgba(255,255,255,0.28)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let j = 0; j <= lv.rows; j++) {
-      for (let i = 0; i <= lv.cols; i++) {
+    for (let j = 0; j <= nr; j++) {
+      for (let i = 0; i <= nc; i++) {
         const x = Math.round(ox + i * step) + 0.5;
         const y = Math.round(oy + j * step) + 0.5;
         if (y < bounds.top || y > bounds.bottom) continue;
@@ -326,14 +330,14 @@ export function createRenderer(canvas) {
     ctx.fillStyle = 'rgba(255,255,255,0.55)';
     ctx.font = `400 8.5px ${FONT}`;
     ctx.beginPath();
-    for (let i = 0; i <= lv.cols * 2; i++) {
+    for (let i = 0; i <= nc * 2; i++) {
       const x = Math.round(ox + (i * step) / 2) + 0.5;
       const len = i % 2 ? 3 : 6;
       ctx.moveTo(x, bounds.top);
       ctx.lineTo(x, bounds.top + len);
-      if (i % 4 === 0 && i < lv.cols * 2) ctx.fillText((x / S).toFixed(2).replace(/^0/, ''), x + 2, bounds.top + 14);
+      if (i % 4 === 0 && i < nc * 2) ctx.fillText((x / S).toFixed(2).replace(/^0/, ''), x + 2, bounds.top + 14);
     }
-    for (let j = 0; j <= lv.rows * 2; j++) {
+    for (let j = 0; j <= nr * 2; j++) {
       const y = Math.round(oy + (j * step) / 2) + 0.5;
       if (y < bounds.top || y > bounds.bottom) continue;
       const len = j % 2 ? 3 : 6;
@@ -344,6 +348,8 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
+  // Debug: every cell that found a repetition, drawn by its core (cells
+  // overlap by half). Weak cells (failed the repeat/isolation test) dotted.
   function drawCells(res, k) {
     if (!res) return;
     ctx.save();
@@ -352,26 +358,26 @@ export function createRenderer(canvas) {
       for (const c of lv.cells) {
         if (!c.type) continue;
         const color = COLORS[c.type];
-        const x = c.x * k;
-        const y = c.y * k;
-        const s = c.size * k;
+        const s = c.core * k;
+        const x = c.cx * k - s / 2;
+        const y = c.cy * k - s / 2;
         if (c.weak) {
-          ctx.strokeStyle = rgba(color, 0.45);
+          ctx.strokeStyle = rgba(color, 0.4);
           ctx.setLineDash([1, 3]);
           ctx.strokeRect(x + 2, y + 2, s - 4, s - 4);
           ctx.setLineDash([]);
         } else if (lv.level === 0) {
-          ctx.fillStyle = rgba(color, 0.16);
+          ctx.fillStyle = rgba(color, 0.13);
           ctx.fillRect(x + 1, y + 1, s - 2, s - 2);
-          ctx.fillStyle = rgba(color, 0.9);
+          ctx.fillStyle = rgba(color, 0.85);
           ctx.fillText(`${c.type[0]}${c.p1.toFixed(1)}`, x + 3, y + 10);
         } else {
-          ctx.strokeStyle = rgba(color, 0.7);
+          ctx.strokeStyle = rgba(color, 0.65);
           ctx.setLineDash([2, 3]);
           ctx.strokeRect(x + 3, y + 3, s - 6, s - 6);
           ctx.setLineDash([]);
-          ctx.fillStyle = rgba(color, 0.9);
-          ctx.fillText(`L1 ${c.type[0]}${c.p1.toFixed(1)}`, x + 6, y + s - 6);
+          ctx.fillStyle = rgba(color, 0.85);
+          ctx.fillText(`L${lv.level} ${c.type[0]}${c.p1.toFixed(1)}`, x + 6, y + s - 6);
         }
       }
     }

@@ -1,7 +1,7 @@
 // Ostinascope — app wiring: source → analysis (≈10 Hz) → tracks → voices,
 // and the overlay at display rate.
 
-import { createDetector } from './detector.js';
+import { createAnalyzer } from './analysis.js';
 import { createTracker } from './tracker.js';
 import { AudioEngine } from './audio.js';
 import { specFor, levelFor, panFor, fadeBarsFor } from './mapping.js';
@@ -15,7 +15,7 @@ const params = new URLSearchParams(location.search);
 const UNIT = 192; // analysis resolution, short side (px)
 const ANALYSIS_HZ = 10;
 
-const detector = createDetector();
+const analyzer = createAnalyzer();
 const tracker = createTracker();
 const audio = new AudioEngine();
 const viewEl = $('#view');
@@ -135,21 +135,31 @@ function normalise(r, unit) {
   };
 }
 
+// Grab a frame and hand it to the analyser (a worker when possible). The
+// result comes back a little later and is stamped with the capture time.
 function analyze(now) {
-  const t0 = performance.now();
+  if (analyzer.busy) return false;
   const img = grab();
-  const res = detector.analyze(img.data, state.procW, state.procH);
-  const unit = Math.min(state.procW, state.procH);
-  const viewN = { w: state.procW / unit, h: state.procH / unit };
-  const dets = res.regions.map((r) => normalise(r, unit));
-  tracker.update(dets, now, viewN, (tr) => fadeBarsFor(tr) * audio.bar * 1000 + 150);
-  state.tracks = tracker.tracks;
-  state.trackById = new Map(state.tracks.map((t) => [t.id, t]));
-  syncVoices(viewN);
-  state.result = res;
-  const ms = performance.now() - t0;
-  state.stats.ms = state.stats.ms ? state.stats.ms * 0.85 + ms * 0.15 : ms;
-  state.stats.regions = res.regions.length;
+  const procW = state.procW;
+  const procH = state.procH;
+  return analyzer.submit(img, state.debug, (res) => {
+    if (!res || procW !== state.procW || procH !== state.procH) return; // layout changed meanwhile
+    const unit = Math.min(procW, procH);
+    const viewN = { w: procW / unit, h: procH / unit };
+    const dets = res.regions.map((r) => normalise(r, unit));
+    tracker.update(dets, now, viewN, (tr) => fadeBarsFor(tr) * audio.bar * 1000 + 150);
+    state.tracks = tracker.tracks;
+    state.trackById = new Map(state.tracks.map((t) => [t.id, t]));
+    syncVoices(viewN);
+    state.result = res;
+    state.stats.ms = state.stats.ms ? state.stats.ms * 0.85 + res.ms * 0.15 : res.ms;
+    state.stats.regions = res.regions.length;
+    if (state.stats.lastResult) {
+      const hz = 1000 / Math.max(1, now - state.stats.lastResult);
+      state.stats.hz = state.stats.hz ? state.stats.hz * 0.9 + hz * 0.1 : hz;
+    }
+    state.stats.lastResult = now;
+  });
 }
 
 function syncVoices(viewN) {
@@ -221,14 +231,7 @@ function loop(ts) {
   if (!src || !src.ready()) return;
   if (src.step) src.step(dt, ts);
 
-  if (ts - lastAnalysis >= 1000 / ANALYSIS_HZ - 4) {
-    if (lastAnalysis) {
-      const hz = 1000 / (ts - lastAnalysis);
-      state.stats.hz = state.stats.hz ? state.stats.hz * 0.9 + hz * 0.1 : hz;
-    }
-    lastAnalysis = ts;
-    analyze(ts);
-  }
+  if (ts - lastAnalysis >= 1000 / ANALYSIS_HZ - 4 && analyze(ts)) lastAnalysis = ts;
 
   if (audio.ctx) {
     for (const e of audio.drainEvents()) {
@@ -344,7 +347,7 @@ function bindRange(id, fmt, fn) {
 }
 
 bindRange('bpm', (v) => String(v), (v) => audio.setBpm(v));
-bindRange('sens', (v) => v.toFixed(2), (v) => detector.setOptions({ sensitivity: v }));
+bindRange('sens', (v) => v.toFixed(2), (v) => analyzer.setOptions({ sensitivity: v }));
 bindRange('maxv', (v) => String(v), (v) => {
   state.maxVoices = v;
 });
@@ -390,7 +393,7 @@ $('#save-poster').addEventListener('click', async () => {
 });
 
 // handle for poking at the app from the console (?debug)
-if (params.has('debug')) window.ostinascope = { state, detector, tracker, audio };
+if (params.has('debug')) window.ostinascope = { state, analyzer, tracker, audio };
 
 // dev shortcut: ?mode=demo starts without the splash (audio stays locked
 // until the first tap)
