@@ -104,6 +104,16 @@ export const DETECTOR_DEFAULTS = Object.freeze({
   // run the row search's passes in turns over this many frames (the others
   // reuse their previous result): 1 = all every frame (tests, benchmarks)
   rowSplit: 1,
+  // a lattice of things gives way to the rows over it that hold this share
+  // of its things (rows.js 6.; see findRows)
+  rowOverLattice: 0.8,
+  // a row is (part of) a lattice of things when this share of its things
+  // are the lattice's
+  rowOnLattice: 0.5,
+  // a lattice of things inside a stripe region, covering less than this
+  // share of it, with a family of lines along the stripes: the stripes
+  // crossing something behind them (railings over a roof)
+  latticeInStripe: 0.7,
 });
 
 const now = () => (globalThis.performance ? performance.now() : Date.now());
@@ -624,7 +634,10 @@ export function createDetector(options = {}) {
       attachPlane(reg, W, H);
       delete reg.cellsOf;
     }
-    if (opt.rows) kept = kept.concat(findRows(kept, dims));
+    if (opt.rows) {
+      kept = kept.concat(findRows(kept, dims));
+      kept = kept.filter((r) => !r.absorbed); // stripes that turned out to be one side of a lattice of things
+    }
     for (const reg of kept) Object.assign(reg, regionColor(rgba, W, H, reg));
     return { W, H, levels, regions: kept, focal: focalNow(), ms: now() - t0 };
   }
@@ -775,22 +788,100 @@ export function createDetector(options = {}) {
     const inside = periodic.filter((q) => q.family !== 'radial');
     const skip = (x, y) => inside.some((q) => x > q.x && x < q.x + q.w && y > q.y && y < q.y + q.h);
     let rows = [];
+    let lats = [];
     passes.forEach((pass, i) => {
       const L = pass.level;
       if (!pyramid[L] || !dims[L]) return;
       if (split === 1 || i % split === rowFrame % split || !rowCache[i]) {
         const sc = opt.levels[L].scale || 2 ** L;
-        rowCache[i] = rowFinder.findInLevel(pyramid[L], dims[L][0], dims[L][1], sc, L, skip, opt.rowSensitivity ?? Math.min(opt.sensitivity, opt.rowSensitivityMax)).map((r) => ({
+        const found = rowFinder.findInLevel(pyramid[L], dims[L][0], dims[L][1], sc, L, skip, opt.rowSensitivity ?? Math.min(opt.sensitivity, opt.rowSensitivityMax));
+        rowCache[i] = found.map((r) => ({
           ...r, img: Float32Array.from(pyramid[L]), iw: dims[L][0],
         }));
+        rowCache[i].lattices = found.lattices || [];
       }
       rows.push(...rowCache[i]);
+      lats.push(...rowCache[i].lattices);
     });
     rowFrame++;
     rows = rowFinder.consolidate(rows);
     const out = [];
-    for (const r of rows) {
-      const reg = rowFinder.toRegion(r, r.img, r.iw, r.scale);
+    const overlap = (a, b) => {
+      const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+      const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+      return (ix * iy) / Math.min(a.w * a.h, b.w * b.h);
+    };
+    // lattices of look-alike things; where the spectral detector already
+    // sees a lattice, its reading (sharper spacings, the surface's tilt) wins
+    const things = rowFinder.latticeRegions(lats)
+      .filter((l) => !periodic.some((q) => q.family === 'lattice' && overlap(q, l) > 0.4));
+    // A row and a lattice in the same place are one thing only when the
+    // row's things are the lattice's (a row of houses on rippled sand is
+    // not part of a lattice on the ripples)
+    const rowRegs = rows.map((r) => rowFinder.toRegion(r, r.img, r.iw, r.scale));
+    const onLattice = (reg, l) => {
+      if (overlap(l, reg) <= 0.6) return false;
+      let n = 0;
+      for (const m of reg.members) {
+        const mx = m.x + m.w / 2;
+        const my = m.y + m.h / 2;
+        if (l.nodes.some((q) => Math.hypot(q.x + q.w / 2 - mx, q.y + q.w / 2 - my) <= 0.5 * Math.min(q.w, m.w, m.h))) n++;
+      }
+      return n >= opt.rowOnLattice * reg.members.length;
+    };
+    // A lattice over a row is often that row read twice: two or three
+    // look-alike parts of each thing (the top and bottom of a ring) make an
+    // "other direction", or two rows of the same things cross. The row is
+    // the reading when the lattice is only two things wide, or when the
+    // rows on it hold most of its things (opt.rowOverLattice). Measured:
+    // the row scenes keep all their rows (45 / 86) for 1 lattice photo in
+    // 360 (at 1.0: 2 rows lost; at 0.6: 9 lattice photos lost).
+    for (let i = things.length - 1; i >= 0; i--) {
+      const l = things[i];
+      const over = rowRegs.filter((reg) => onLattice(reg, l));
+      if (!over.length) continue;
+      const held = over.reduce((t, reg) => t + reg.count, 0);
+      if (l.span <= 2 || held >= opt.rowOverLattice * l.cells) things.splice(i, 1);
+    }
+    // A lattice in a small part of a stripe region, with one of its
+    // families of lines (any low-order one: a, b, a ± b, …) along the
+    // stripes, is the stripes crossing something behind them. Measured: the
+    // only new loop it made in the row sequences (railings over a roof)
+    // goes, for 2 lattice photos in 360.
+    const families = (l) => {
+      const [[ax, ay], [bx, by]] = l.basis;
+      const det = Math.abs(ax * by - ay * bx);
+      return [[1, 0], [0, 1], [1, 1], [1, -1], [2, 1], [1, 2], [2, -1], [1, -2]].map(([m, n]) => {
+        const vx = m * ax + n * bx;
+        const vy = m * ay + n * by;
+        return [det / Math.hypot(vx, vy), ((((Math.atan2(-vy, vx) * 180) / Math.PI) % 180) + 180) % 180];
+      });
+    };
+    for (let i = things.length - 1; i >= 0; i--) {
+      const l = things[i];
+      if (periodic.some((q) => q.type === TYPE.STRIPE && overlap(l, q) > 0.8 && l.w * l.h < opt.latticeInStripe * q.w * q.h &&
+        families(l).some(([p, a]) => ratio(q.period, p) < 1.25 && angleDiff(q.angle, a) < 12))) things.splice(i, 1);
+    }
+    // a stripe region on such a lattice, along one of its directions, is
+    // that lattice seen one way (as absorbRims does for spectral lattices)
+    for (const q of periodic) {
+      if (q.type !== TYPE.STRIPE) continue;
+      const host = things.find((l) => overlap(l, q) > 0.5 &&
+        l.dirs.some(([p, a]) => ratio(q.period, p) < 1.25 && angleDiff(q.angle, a) < 12));
+      if (!host) continue;
+      q.absorbed = true;
+      const x1 = Math.max(host.x + host.w, q.x + q.w);
+      const y1 = Math.max(host.y + host.h, q.y + q.h);
+      host.x = Math.min(host.x, q.x);
+      host.y = Math.min(host.y, q.y);
+      host.w = x1 - host.x;
+      host.h = y1 - host.y;
+      host.cx = host.x + host.w / 2;
+      host.cy = host.y + host.h / 2;
+    }
+    for (const l of things) l.quad = [[l.x, l.y], [l.x + l.w, l.y], [l.x + l.w, l.y + l.h], [l.x, l.y + l.h]];
+    rows.forEach((r, i) => {
+      const reg = rowRegs[i];
       const dup = periodic.some((q) => {
         const ix = Math.max(0, Math.min(q.x + q.w, reg.x + reg.w) - Math.max(q.x, reg.x));
         const iy = Math.max(0, Math.min(q.y + q.h, reg.y + reg.h) - Math.max(q.y, reg.y));
@@ -798,9 +889,10 @@ export function createDetector(options = {}) {
         const ps = [q.period, q.period2].filter(Boolean);
         return ps.some((p) => [1, 2, 3].some((m) => ratio(reg.period, p * m) < 1.3));
       });
-      if (!dup) out.push(reg);
-    }
-    return out;
+      // a row of the things of a lattice is part of it
+      if (!dup && !things.some((l) => onLattice(reg, l))) out.push(reg);
+    });
+    return out.concat(things);
   }
 
   // ---------------------------------------------------------------------

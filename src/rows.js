@@ -28,6 +28,18 @@
 //      the sizes shrink the same way by about the square root of what the
 //      gaps do (a shelf spaced unevenly on purpose has growing gaps but equal
 //      sizes, and stays as it is).
+//   6. look-alikes in two directions → a lattice of things (bricks, tiles,
+//      keys, windows of a facade, the cells of a honeycomb). Seen in a
+//      photo, such lattices rarely give the spectral detector clean peaks
+//      (shading, uneven colour, wear), but each brick still looks like the
+//      next. The anchor's look-alikes give two lattice vectors (from their
+//      neighbours); from the anchor the lattice is then walked, each next
+//      thing looked for one step from one already found (a lattice bending
+//      in perspective is followed). Only things at the corners of whole
+//      cells count — a look-alike hanging off by one step can be chance —
+//      and the similarity must drop halfway between neighbours in both
+//      directions: along a stripe the same look goes on and on, so without
+//      that a striped board would read as a lattice too.
 //
 // Pure module (no DOM).
 
@@ -78,6 +90,30 @@ export const ROW_DEFAULTS = Object.freeze({
   evenSizeTight: 0.3, // … but sizes that lie close to their line must agree this closely (share of the expected)
   evenMinSize: 3, // blocks: things smaller than this across the row are too small to check the sizes on
   onWhy: null, // (reason, row) → why a row was not read as receding (for tuning; off)
+  // 6. lattices of things (null: off). Measured on photo views (bench/
+  // families.mjs): lattices 28 → 60 / 360 views, a lattice on stripes 14 →
+  // 23 / 270 (half of those are real: window grids, steps laid like
+  // bricks), photos without a pattern unchanged. Fitting all look-alikes to
+  // one lattice (instead of walking it) found about as many, but also
+  // lattices over rows of things and on blurred lettering; walking without
+  // whole cells, many more of those. Lowering the similarity for walked
+  // things, or asking for 3 cells, loses more than it saves.
+  lattice: {
+    minLen: 0.7, // lattice vectors at least this × the window (overlapping look-alikes are texture)
+    tol: 0.25, // neighbour vectors agree within this × their length
+    minAngle: 25, // the two vectors' directions differ by at least this (degrees)
+    snap: 0.25, // the next thing is looked for within this × the shorter vector of where a step lands
+    maxNodes: 60, // things walked at most
+    minCells: 2, // whole cells (four things a step apart each way) at least
+    minPoints: 6, // things at their corners at least
+    localShare: 0.8, // of the anchor's look-alikes inside the lattice must be its things (0.6: smooth noise reads as a lattice)
+    minSpan: 2, // rows and columns (of the reduced basis) at least
+    span2Points: 8, // only two wide: at least this many things (2 × 3 chunks of a face are not a lattice)
+    maxAspect: 3, // longer / shorter vector: further apart one way, they are rows (two shelves of cups)
+    dip: 0.11, // similarity drop halfway between neighbours
+    dipShare: 0.6, // of the neighbour pairs, in each direction
+    maxPairs: 12, // midpoint checks per direction
+  },
 });
 
 // The detector's sensitivity slider, applied to the row thresholds. Only
@@ -576,8 +612,9 @@ export function createRowFinder(options = {}) {
    */
   function findInLevel(img, iw, ih, scale, level, skip = null, sens = 1) {
     const opt = loosen(base, sens);
+    const lats = [];
     const pass = opt.passes.find((p) => p.level === level);
-    if (!pass) return [];
+    if (!pass) return Object.assign([], { lattices: lats });
     const { bw, bh } = blocks(img, iw, ih);
     const B = opt.block;
     const k = B * scale; // block → analysis px
@@ -860,6 +897,11 @@ export function createRowFinder(options = {}) {
           if (pts.every((p) => Math.hypot(p.x - c.x, p.y - c.y) >= opt.minGap * s)) pts.push(c);
         }
         if (pts.length < opt.minCount) continue;
+        // 6. the same look-alikes in two directions: a lattice of things
+        if (opt.lattice) {
+          const lat = fitLattice(pts, s, simAt, nx, ny, need);
+          if (lat) lats.push(latticeRecord(lat, img, iw, level, scale, s, k));
+        }
         const total = pts.length; // look-alikes anywhere in the frame (+ anchor)
         const line = bestLine(pts, opt.lineTol * s);
         if (!line || !line.inl.some((p) => p.anchor)) continue;
@@ -945,7 +987,290 @@ export function createRowFinder(options = {}) {
         });
       }
     }
+    out.lattices = lats;
     return out;
+  }
+
+  // 6. A lattice through the look-alikes pts (window positions, blocks):
+  // { a, b, det, on, span } or null. simAt(x, y): similarity to the anchor
+  // of the window at (x, y); need: the similarity of a look-alike.
+  let lvx = new Float64Array(0);
+  let lvy = new Float64Array(0);
+  let lvr = new Float64Array(0);
+  let lok = new Uint8Array(0);
+  function fitLattice(pts, s, simAt, nx, ny, need) {
+    const L = opt.lattice;
+    const np = pts.length;
+    if (np < L.minPoints) return null;
+    // each thing's 3 nearest neighbours, folded into one half-plane (typed
+    // arrays: this runs for most anchors)
+    if (lvx.length < 3 * np) {
+      lvx = new Float64Array(3 * np);
+      lvy = new Float64Array(3 * np);
+      lvr = new Float64Array(3 * np);
+      lok = new Uint8Array(3 * np);
+    }
+    let nv = 0;
+    for (let pi = 0; pi < np; pi++) {
+      const p = pts[pi];
+      let i0 = -1, i1 = -1, i2 = -1, r0 = Infinity, r1 = Infinity, r2 = Infinity;
+      for (let qi = 0; qi < np; qi++) {
+        if (qi === pi) continue;
+        const r = Math.hypot(pts[qi].x - p.x, pts[qi].y - p.y);
+        if (r < r0) { i2 = i1; r2 = r1; i1 = i0; r1 = r0; i0 = qi; r0 = r; }
+        else if (r < r1) { i2 = i1; r2 = r1; i1 = qi; r1 = r; }
+        else if (r < r2) { i2 = qi; r2 = r; }
+      }
+      for (const [qi, r] of [[i0, r0], [i1, r1], [i2, r2]]) {
+        if (qi < 0) continue;
+        const x = pts[qi].x - p.x;
+        const y = pts[qi].y - p.y;
+        const f = y < 0 || (y === 0 && x < 0) ? -1 : 1;
+        lvx[nv] = f * x;
+        lvy[nv] = f * y;
+        lvr[nv] = r;
+        nv++;
+      }
+    }
+    const angDiff = (u, v) => {
+      const d = Math.abs(Math.atan2(u.y, u.x) - Math.atan2(v.y, v.x)) % Math.PI;
+      return Math.min(d, Math.PI - d) * DEG;
+    };
+    // the best supported vector (and its supporters' mean) among those lok
+    // lets take part; supporters lie within tol × its length
+    const pick = () => {
+      let best = -1;
+      let bs = 0;
+      const lim = L.minLen * s;
+      for (let v = 0; v < nv; v++) {
+        if (lvr[v] < lim || !lok[v]) continue;
+        const t2 = (L.tol * lvr[v]) ** 2;
+        let c = 0;
+        for (let w = 0; w < nv; w++) if (lok[w] && (lvx[w] - lvx[v]) ** 2 + (lvy[w] - lvy[v]) ** 2 <= t2) c++;
+        if (c > bs || (c === bs && best >= 0 && lvr[v] < lvr[best])) {
+          best = v;
+          bs = c;
+        }
+      }
+      if (best < 0) return null;
+      const t2 = (L.tol * lvr[best]) ** 2;
+      let mx = 0, my = 0, n = 0;
+      for (let w = 0; w < nv; w++) {
+        if (!lok[w] || (lvx[w] - lvx[best]) ** 2 + (lvy[w] - lvy[best]) ** 2 > t2) continue;
+        mx += lvx[w];
+        my += lvy[w];
+        n++;
+      }
+      return { x: mx / n, y: my / n, r: Math.hypot(mx / n, my / n) };
+    };
+    lok.fill(1, 0, nv);
+    let a = pick();
+    if (!a) return null;
+    for (let v = 0; v < nv; v++) lok[v] = angDiff({ x: lvx[v], y: lvy[v] }, a) >= L.minAngle ? 1 : 0;
+    let b = pick();
+    if (!b) return null;
+    // Gauss reduction: the same lattice, by its two shortest independent
+    // vectors — so that rows and columns are counted as such
+    for (let it = 0; it < 8; it++) {
+      if (b.r < a.r) [a, b] = [b, a];
+      const m = Math.round((a.x * b.x + a.y * b.y) / (a.r * a.r));
+      if (!m) break;
+      const x = b.x - m * a.x;
+      const y = b.y - m * a.y;
+      b = { x, y, r: Math.hypot(x, y) };
+    }
+    if (b.r < L.minLen * s || angDiff(a, b) < L.minAngle || b.r > L.maxAspect * a.r) return null;
+    const det = a.x * b.y - a.y * b.x;
+    // walk the lattice from the anchor: each next thing is looked for
+    // around where a step (±a, ±b) from a thing already found lands, so a
+    // lattice that bends in perspective is followed
+    const o = pts.find((p) => p.anchor) || pts[0];
+    const rad = Math.max(1, Math.round(L.snap * Math.min(a.r, b.r)));
+    const nodes = new Map([['0,0', { p: o, i: 0, j: 0 }]]);
+    const used = new Set([`${Math.round(o.x)},${Math.round(o.y)}`]);
+    const tried = new Set(['0,0']);
+    const queue = [nodes.get('0,0')];
+    while (queue.length && nodes.size < L.maxNodes) {
+      const q = queue.shift();
+      for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const key = `${q.i + di},${q.j + dj}`;
+        if (tried.has(key)) continue;
+        tried.add(key);
+        const px = Math.round(q.p.x + di * a.x + dj * b.x);
+        const py = Math.round(q.p.y + di * a.y + dj * b.y);
+        let bv = -1, bx = 0, by = 0;
+        for (let y = py - rad; y <= py + rad; y++) {
+          for (let x = px - rad; x <= px + rad; x++) {
+            if (x < 0 || y < 0 || x >= nx || y >= ny) continue;
+            const v = simAt(x, y);
+            if (v > bv) {
+              bv = v;
+              bx = x;
+              by = y;
+            }
+          }
+        }
+        if (bv < need || energy[by * nx + bx] < 0.6 * opt.minEnergy || used.has(`${bx},${by}`)) continue;
+        used.add(`${bx},${by}`);
+        const n = { p: { x: bx, y: by, sim: bv }, i: q.i + di, j: q.j + dj };
+        nodes.set(key, n);
+        queue.push(n);
+      }
+    }
+    // only things at the corners of whole cells count
+    const inCell = new Set();
+    let cells = 0;
+    for (const q of nodes.values()) {
+      const c = [`${q.i},${q.j}`, `${q.i + 1},${q.j}`, `${q.i},${q.j + 1}`, `${q.i + 1},${q.j + 1}`];
+      if (!c.every((k) => nodes.has(k))) continue;
+      cells++;
+      for (const k of c) inCell.add(k);
+    }
+    if (cells < L.minCells) return null;
+    for (const k of [...nodes.keys()]) if (!inCell.has(k)) nodes.delete(k);
+    const on = [...nodes.values()];
+    if (on.length < L.minPoints) return null;
+    // Inside the lattice, the anchor's best look-alikes from the whole frame
+    // must be its things. A walked thing is the best window around where a
+    // step lands, so in smooth noise or along a plank there is always one,
+    // a step apart, with the midpoint less alike — but the best look-alikes
+    // lie anywhere in between.
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const { p } of on) {
+      x0 = Math.min(x0, p.x);
+      y0 = Math.min(y0, p.y);
+      x1 = Math.max(x1, p.x);
+      y1 = Math.max(y1, p.y);
+    }
+    let inside = 0;
+    let hit = 0;
+    for (const p of pts) {
+      if (p.x < x0 - rad || p.x > x1 + rad || p.y < y0 - rad || p.y > y1 + rad) continue;
+      inside++;
+      if (on.some((q) => Math.abs(q.p.x - p.x) <= rad + 0.5 && Math.abs(q.p.y - p.y) <= rad + 0.5)) hit++;
+    }
+    if (hit < L.localShare * inside) return null;
+    const span = Math.min(new Set(on.map((q) => q.i)).size, new Set(on.map((q) => q.j)).size);
+    if (span < L.minSpan || (span <= 2 && on.length < L.span2Points)) return null;
+    // halfway between neighbours, in both directions, something else
+    const midSim = (u, v) => {
+      const mx = Math.round((u.x + v.x) / 2);
+      const my = Math.round((u.y + v.y) / 2);
+      let m = -1;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const x = mx + dx;
+          const y = my + dy;
+          if (x >= 0 && y >= 0 && x < nx && y < ny) m = Math.max(m, simAt(x, y));
+        }
+      }
+      return m;
+    };
+    const dips = (di, dj) => {
+      let pairs = 0;
+      let d = 0;
+      for (const q of on) {
+        if (pairs >= L.maxPairs) break;
+        const r = nodes.get(`${q.i + di},${q.j + dj}`);
+        if (!r) continue;
+        pairs++;
+        if (midSim(q.p, r.p) < Math.min(q.p.sim, r.p.sim) - L.dip) d++;
+      }
+      return pairs >= 2 && d >= L.dipShare * pairs;
+    };
+    if (!dips(1, 0) || !dips(0, 1)) return null;
+    return { a, b, det, on, span };
+  }
+
+  // A lattice in analysis px: its two families of lines (spacing and line
+  // angle, like a spectral GRID: lines along b lie |det|/|b| apart), its
+  // vectors, its things and the box around them, their mean similarity and
+  // grey contrast.
+  function latticeRecord(lat, img, iw, level, scale, s, k) {
+    const { a, b, det, on } = lat;
+    const lineAngle = (v) => ((((Math.atan2(-v.y, v.x) * DEG) % 180) + 180) % 180);
+    const fams = [
+      { p: (Math.abs(det) / b.r) * k, angle: lineAngle(b) },
+      { p: (Math.abs(det) / a.r) * k, angle: lineAngle(a) },
+    ].sort((u, v) => v.p - u.p);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const { p } of on) {
+      x0 = Math.min(x0, p.x * k);
+      y0 = Math.min(y0, p.y * k);
+      x1 = Math.max(x1, (p.x + s) * k);
+      y1 = Math.max(y1, (p.y + s) * k);
+    }
+    const others = on.filter((q) => !q.p.anchor);
+    const sim = others.reduce((t, q) => t + q.p.sim, 0) / Math.max(1, others.length);
+    const nodes = on.map(({ p }) => ({ x: p.x * k, y: p.y * k, w: s * k }));
+    return { level, scale, size: s * k, x: x0, y: y0, w: x1 - x0, h: y1 - y0, fams, count: on.length, sim, span: lat.span,
+      basis: [[a.x * k, a.y * k], [b.x * k, b.y * k]], nodes, contrast: contrastUnder(nodes, img, iw, scale) };
+  }
+
+  // Grey contrast under some square boxes (analysis px) of a level image.
+  function contrastUnder(boxes, img, iw, scale) {
+    const ih = Math.floor(img.length / iw);
+    let s = 0, s2 = 0, n = 0;
+    for (const m of boxes) {
+      const mx0 = Math.floor(m.x / scale);
+      const my0 = Math.floor(m.y / scale);
+      const mw = Math.floor(m.w / scale);
+      for (let y = Math.max(0, my0); y < Math.min(ih, my0 + mw); y += 2) {
+        for (let x = Math.max(0, mx0); x < Math.min(iw, mx0 + mw); x += 2) {
+          const v = img[y * iw + x];
+          s += v;
+          s2 += v * v;
+          n++;
+        }
+      }
+    }
+    const std = n ? Math.sqrt(Math.max(0, s2 / n - (s / n) ** 2)) : 0;
+    return clamp(std * 2.5, 0, 1);
+  }
+
+  // Many lattice records (anchors, sizes, levels) of the same place: the
+  // best of each, as detector regions (GRID: whether the things are blobs
+  // or cells between lines is not told apart yet).
+  function latticeRegions(lats) {
+    const overlap = (p, q) => {
+      const ix = Math.max(0, Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x));
+      const iy = Math.max(0, Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y));
+      return (ix * iy) / Math.min(p.w * p.h, q.w * q.h);
+    };
+    const kept = [];
+    for (const l of lats.slice().sort((p, q) => q.count + q.sim - (p.count + p.sim))) {
+      if (!kept.some((q) => overlap(q, l) > 0.5)) kept.push(l);
+    }
+    return kept.map((l) => {
+      const [f1, f2] = l.fams;
+      return {
+        type: 'GRID',
+        family: 'lattice',
+        level: l.level,
+        cells: l.count,
+        cellSize: l.size,
+        x: l.x,
+        y: l.y,
+        w: l.w,
+        h: l.h,
+        cx: l.x + l.w / 2,
+        cy: l.y + l.h / 2,
+        period: f1.p,
+        period2: f2.p,
+        ratio: f1.p / f2.p,
+        angle: f1.angle,
+        latticeAngle: (((f2.angle - f1.angle) % 180) + 180) % 180, // the second family's lines, from the first's
+        coherence: 1,
+        score: clamp(l.sim, 0, 1),
+        contrast: l.contrast,
+        sharp: 0.5,
+        things: true, // found as a lattice of look-alike things
+        span: l.span, // its narrower side, in things (rows × columns of the reduced basis)
+        basis: l.basis, // its two vectors (analysis px)
+        nodes: l.nodes, // its things: square boxes { x, y, w } (analysis px)
+        dirs: [[f1.p, f1.angle], [f2.p, f2.angle]],
+      };
+    });
   }
 
   // Many anchors (and window sizes, and levels) find the same row; keep
@@ -1000,22 +1325,7 @@ export function createRowFinder(options = {}) {
     }
     // contrast from the grey values under the members (level image; a
     // member at the frame's edge may stick out of it)
-    const ih = Math.floor(img.length / iw);
-    let s = 0, s2 = 0, n = 0;
-    for (const m of r.members) {
-      const mx0 = Math.floor(m.x / scale);
-      const my0 = Math.floor(m.y / scale);
-      const mw = Math.floor(m.w / scale);
-      for (let y = Math.max(0, my0); y < Math.min(ih, my0 + mw); y += 2) {
-        for (let x = Math.max(0, mx0); x < Math.min(iw, mx0 + mw); x += 2) {
-          const v = img[y * iw + x];
-          s += v;
-          s2 += v * v;
-          n++;
-        }
-      }
-    }
-    const std = n ? Math.sqrt(Math.max(0, s2 / n - (s / n) ** 2)) : 0;
+    const contrast = contrastUnder(r.members, img, iw, scale);
     // offset of each member from the row's line, in window sizes (→ melody)
     const c0 = r.members[0];
     const nxp = -r.uy;
@@ -1038,7 +1348,7 @@ export function createRowFinder(options = {}) {
       angle: ((((Math.atan2(-r.uy, r.ux) * DEG) % 180) + 180) % 180),
       coherence: 1,
       score: clamp(r.sim, 0, 1),
-      contrast: clamp(std * 2.5, 0, 1),
+      contrast,
       sharp: 0.5,
       size: r.size,
       count: r.members.length,
@@ -1055,5 +1365,5 @@ export function createRowFinder(options = {}) {
     };
   }
 
-  return { findInLevel, consolidate, toRegion, options: opt };
+  return { findInLevel, consolidate, toRegion, latticeRegions, options: opt };
 }

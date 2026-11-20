@@ -112,3 +112,60 @@ export const valueNoise = (scale, seed = 7) => {
 };
 
 export const split = (fa, fb, xSplit) => (x, y) => (x < xSplit ? fa(x, y) : fb(x, y));
+
+// --- lattices of things, photo-like: every brick/tile its own colour, a
+// shading gradient. W, H: the frame (for the gradient).
+const cellRandom = (i, j, s = 1) => {
+  const r = mulberry32((i * 73856093) ^ (j * 19349663) ^ s);
+  r();
+  return r();
+};
+const shading = (W, H) => (x, y) => 0.85 + 0.15 * (x / W) - 0.1 * (y / H);
+
+/** Running bond: bricks bw × bh, 2 px mortar, every course offset by half. */
+export const brickBond = (bw, bh, W, H) => {
+  const k = shading(W, H);
+  return (x, y) => {
+    const j = Math.floor(y / bh);
+    const xo = x + ((j % 2) * bw) / 2;
+    const i = Math.floor(xo / bw);
+    const s = k(x, y);
+    if (y - j * bh < 2 || xo - i * bw < 2) return [0.78 * s, 0.76 * s, 0.72 * s];
+    const v = 0.55 + 0.3 * cellRandom(i, j);
+    return [0.62 * v * s, 0.3 * v * s, 0.22 * v * s];
+  };
+};
+
+/** Tiles p px with light grout, every tile a different grey. */
+export const unevenTiles = (p, W, H) => {
+  const k = shading(W, H);
+  return (x, y) => {
+    const i = Math.floor(x / p);
+    const j = Math.floor(y / p);
+    const s = k(x, y);
+    if (x - i * p < 2 || y - j * p < 2) return [0.88 * s, 0.88 * s, 0.86 * s];
+    const v = (0.35 + 0.35 * cellRandom(i, j, 3)) * s;
+    return [v, v * 1.02, v * 1.05];
+  };
+};
+
+/** Chain-link: thin wires at ±45°, p apart, over a soft uneven background. */
+export const chainLink = (p) => (x, y) => {
+  const u = (((x + y) % p) + p) % p;
+  const v = (((x - y) % p) + p) % p;
+  if (u < 1.6 || v < 1.6) return [0.55, 0.56, 0.58];
+  const g = 0.2 + 0.25 * cellRandom(Math.floor(x / 40), Math.floor(y / 40), 7);
+  return [g * 0.7, g, g * 0.6];
+};
+
+/** A board of planks p wide, each its own brown, with (non-periodic) grain along them. */
+export const plankBoard = (p) => (x, y) => {
+  const i = Math.floor(x / p);
+  const base = 0.5 + 0.3 * cellRandom(i, 0, 5);
+  const t = y / 5 + 7 * cellRandom(i, 1, 9);
+  const g0 = cellRandom(i, Math.floor(t), 11);
+  const g1 = cellRandom(i, Math.floor(t) + 1, 11);
+  const grain = 0.12 * (g0 + (g1 - g0) * (t - Math.floor(t)) - 0.5) + (x - i * p < 1.5 ? -0.25 : 0);
+  const v = Math.max(0, base + grain);
+  return [v * 0.8, v * 0.55, v * 0.35];
+};

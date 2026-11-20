@@ -117,6 +117,35 @@ test('radial rays → RADIAL', () => {
   assert.ok(Math.hypot(r.center.x - 96, r.center.y - 210) < 24, `centre ${JSON.stringify(r.center)}`);
 });
 
+// Lattices of things (rows.js 6.): bricks and tiles that each have their
+// own colour give the spectral detector stripes at best; each brick still
+// looks like the next. A plank board is stripes only: along a plank the
+// look goes on, so it must not become a lattice.
+const latticeCover = (res) => res.regions.filter((r) => r.family === 'lattice').reduce((s, r) => s + area(r), 0) / (W * H);
+for (const [bw, bh] of [[30, 12], [40, 16]]) {
+  test(`running bond bricks ${bw}×${bh}, each its own colour → a lattice`, () => {
+    const res = run(S.brickBond(bw, bh, W, H), { ss: 2 });
+    assert.ok(latticeCover(res) > 0.4, describe(res));
+  });
+}
+for (const p of [26, 34]) {
+  test(`tiles p=${p}, each a different grey → a lattice`, () => {
+    const res = run(S.unevenTiles(p, W, H), { ss: 2 });
+    assert.ok(latticeCover(res) > 0.5, describe(res));
+  });
+}
+test('chain-link, thin wires over an uneven background → a lattice', () => {
+  const res = run(S.chainLink(16), { ss: 2 });
+  assert.ok(latticeCover(res) > 0.5, describe(res));
+});
+for (const p of [14, 20]) {
+  test(`plank board p=${p} → STRIPE, not a lattice`, () => {
+    const res = run(S.plankBoard(p), { ss: 2 });
+    assert.ok(coverage(res, TYPE.STRIPE) > 0.3, describe(res));
+    assert.equal(latticeCover(res), 0, describe(res));
+  });
+}
+
 test('non-repeating texture → nothing', () => {
   const res = run(S.valueNoise(5), { noise: 0.03 });
   assert.equal(res.regions.length, 0, describe(res));
