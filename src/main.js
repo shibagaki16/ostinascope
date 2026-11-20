@@ -11,6 +11,7 @@ import { specFor, levelFor, panFor, fadeBarsFor } from './mapping.js';
 import { createRenderer } from './render.js';
 import { openCamera, createDemoSource } from './sources.js';
 import { drawPoster, loadPoster } from './poster.js';
+import { registerUpdates, serverVersion, formatVersion, refreshApp } from './update.js';
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
@@ -507,6 +508,29 @@ $('#save-poster').addEventListener('click', async () => {
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }, 'image/png');
 });
+
+// ---------------------------------------------------------------------------
+// staying up to date (sw.js): always the newest files, the version on show,
+// and a button that fetches everything again
+
+registerUpdates(() => state.running);
+serverVersion().then((d) => {
+  for (const el of document.querySelectorAll('.version-text')) el.textContent = formatVersion(d);
+});
+for (const btn of document.querySelectorAll('.refresh-app')) {
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = '読み込み直しています…';
+    if (!(await refreshApp())) {
+      btn.textContent = 'オフラインのため更新できません';
+      setTimeout(() => {
+        btn.textContent = label;
+        btn.disabled = false;
+      }, 2500);
+    }
+  });
+}
 
 // handle for poking at the app from the console (?debug)
 if (params.has('debug')) window.ostinascope = { state, analyzer, tracker, audio, motion };
