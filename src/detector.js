@@ -18,6 +18,8 @@
 import { makePowerSpectrum } from './fft.js';
 import { createRowFinder } from './rows.js';
 import { regionColor } from './color.js';
+import { fitPerspective, frequencyOf, planeFromLine, quadShape, rectifyFrequency, PLANE_DEFAULTS } from './plane.js';
+import { applyH } from './homography.js';
 import { angleDiff, clamp, ratio, TO_DEG as DEG } from './util.js';
 
 export { angleDiff }; // part of the detector's API (tests, tracker)
@@ -87,6 +89,18 @@ export const DETECTOR_DEFAULTS = Object.freeze({
   // the row search follows the sensitivity only up to here: beyond it,
   // noise textures start to form rows (rowSensitivity overrides)
   rowSensitivityMax: 1.3,
+  // the surface's tilt from how a stripe/lattice region is distorted
+  // (plane.js): its outline then follows the surface, and a lattice's
+  // spacing ratio is measured head-on
+  plane: true,
+  // camera focal length, × the frame's short side. null: learnt from tilted
+  // grids (their lines meet at right angles on the paper), focalDefault
+  // until a few have been seen
+  focal: null,
+  focalDefault: 1.6, // ≈ 34° across the short side: a phone's main camera, cropped to the screen
+  focalRange: [0.7, 4],
+  focalSamples: 5, // estimates needed before the learnt value is used
+  planeOptions: {},
   // run the row search's passes in turns over this many frames (the others
   // reuse their previous result): 1 = all every frame (tests, benchmarks)
   rowSplit: 1,
@@ -96,6 +110,13 @@ const now = () => (globalThis.performance ? performance.now() : Date.now());
 
 export function createDetector(options = {}) {
   const opt = { ...DETECTOR_DEFAULTS, ...options };
+  const focalSeen = []; // recent focal estimates from tilted grids (× short side)
+  const focalNow = () => {
+    if (opt.focal) return opt.focal;
+    if (focalSeen.length < opt.focalSamples) return opt.focalDefault;
+    const s = [...focalSeen].sort((a, b) => a - b);
+    return s[s.length >> 1];
+  };
   const power = makePowerSpectrum(N);
   const rowFinder = createRowFinder(options.rowOptions || {});
   const work = new Float64Array(NN);
@@ -599,9 +620,143 @@ export function createDetector(options = {}) {
     }
 
     let kept = dedupe(absorbRings(absorbRims(regions)));
+    for (const reg of kept) {
+      attachPlane(reg, W, H);
+      delete reg.cellsOf;
+    }
     if (opt.rows) kept = kept.concat(findRows(kept, dims));
     for (const reg of kept) Object.assign(reg, regionColor(rgba, W, H, reg));
-    return { W, H, levels, regions: kept, ms: now() - t0 };
+    return { W, H, levels, regions: kept, focal: focalNow(), ms: now() - t0 };
+  }
+
+  // The surface under a stripe or lattice region: fit the perspective model
+  // to its cells' frequencies (plane.js). A tilted surface gets an outline
+  // that follows it (the cells' extent seen head-on, brought back: a
+  // trapezoid) and, for lattices, the spacing ratio measured head-on — what
+  // was printed, not what the angle makes of it.
+  function attachPlane(reg, W, H) {
+    reg.quad = [[reg.x, reg.y], [reg.x + reg.w, reg.y], [reg.x + reg.w, reg.y + reg.h], [reg.x, reg.y + reg.h]];
+    const cs = reg.cellsOf;
+    if (!opt.plane || !cs || (reg.family !== 'line' && reg.family !== 'lattice')) return;
+    const po = { ...PLANE_DEFAULTS, ...opt.planeOptions };
+    const lattice = reg.family === 'lattice';
+    const use = lattice ? cs.filter((c) => c.p2) : cs.filter((c) => c.type === TYPE.STRIPE);
+    if (use.length < po.minCells) return;
+    let x0 = 0, y0 = 0, sw = 0;
+    for (const c of use) {
+      x0 += c.score * c.cx;
+      y0 += c.score * c.cy;
+      sw += c.score;
+    }
+    x0 /= sw;
+    y0 /= sw;
+    const obs = [];
+    for (const c of use) {
+      const w = Math.max(c.score, 1e-3);
+      const at = { x: c.cx - x0, y: c.cy - y0, w };
+      if (!lattice) {
+        const [fx, fy] = frequencyOf(c.p1, c.a1);
+        obs.push({ ...at, fx, fy, fam: 0 });
+        continue;
+      }
+      // the cell's direction closer to the region's first one is family 0
+      const first = angleDiff(c.a1, reg.angle) <= angleDiff(c.a2, reg.angle);
+      const [fa, fb] = first ? [[c.p1, c.a1], [c.p2, c.a2]] : [[c.p2, c.a2], [c.p1, c.a1]];
+      const [ax, ay] = frequencyOf(...fa);
+      const [bx, by] = frequencyOf(...fb);
+      obs.push({ ...at, fx: ax, fy: ay, fam: 0 }, { ...at, fx: bx, fy: by, fam: 1 });
+    }
+    const fit = fitPerspective(obs, lattice ? 2 : 1, po);
+    if (!fit || fit.flat) return;
+    const short = Math.min(W, H);
+    // a grid's two families meet at right angles on the paper: that fixes
+    // the focal length (one unknown) — remember it for every region
+    if (lattice && reg.type === TYPE.GRID && !opt.focal) {
+      const fk = solveFocal(fit, x0, y0, W, H);
+      if (fk) {
+        focalSeen.push(fk / short);
+        if (focalSeen.length > 31) focalSeen.shift();
+      }
+    }
+    const f = focalNow() * short;
+    const pl = planeFromLine(fit.c, x0, y0, f, W / 2, H / 2);
+    if (!pl || pl.slant < po.minSlant || pl.slant > po.maxSlant) return;
+    // the cells' extent head-on → back into the image
+    let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+    for (const c of cs) {
+      const h = c.core / 2;
+      for (const [dx, dy] of [[-h, -h], [h, -h], [h, h], [-h, h]]) {
+        const [u, v] = applyH(pl.rect, c.cx + dx, c.cy + dy);
+        if (!Number.isFinite(u) || !Number.isFinite(v)) return;
+        u0 = Math.min(u0, u);
+        v0 = Math.min(v0, v);
+        u1 = Math.max(u1, u);
+        v1 = Math.max(v1, v);
+      }
+    }
+    const quad = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]].map(([u, v]) => applyH(pl.back, u, v));
+    if (quad.some(([x, y]) => !Number.isFinite(x) || !Number.isFinite(y))) return;
+    // a tilt that draws a sliver or a much larger outline than the cells
+    // cover is a weak fit (a region cut by the frame's edge…): not believed
+    const shape = quadShape(quad);
+    const grow = shape.area / Math.max(1e-9, reg.w * reg.h);
+    if (!shape.convex || Math.min(...shape.angles) < po.minCorner || grow > po.maxAreaChange || grow < 1 / po.maxAreaChange) return;
+    reg.quad = quad;
+    reg.plane = { slant: pl.slant, tilt: pl.tilt, normal: pl.normal, F: fit.F };
+    if (lattice && use.length >= po.minRatioCells) {
+      // spacing ratio and lattice angle head-on (at the region's centre the
+      // model's frequency is p itself)
+      const [ka, kb] = fit.p.map((k) => rectifyFrequency(pl.rect, x0, y0, k));
+      const la = Math.hypot(...ka);
+      const lb = Math.hypot(...kb);
+      reg.ratioSeen = reg.ratio;
+      reg.ratio = Math.max(la, lb) / Math.min(la, lb);
+      // (latticeAngle stays as seen: the overlay draws in the image)
+      const cosA = Math.abs(ka[0] * kb[0] + ka[1] * kb[1]) / (la * lb);
+      reg.latticeAngleFlat = (Math.acos(Math.min(1, cosA)) * 180) / Math.PI;
+    }
+  }
+
+  // Focal length (px) at which a lattice's two families meet at 90° head-on,
+  // or null. Only a clearly tilted grid says much about it.
+  function solveFocal(fit, x0, y0, W, H) {
+    const short = Math.min(W, H);
+    const angleAt = (f) => {
+      const pl = planeFromLine(fit.c, x0, y0, f, W / 2, H / 2);
+      if (!pl) return null;
+      const [ka, kb] = fit.p.map((k) => rectifyFrequency(pl.rect, x0, y0, k));
+      const c = (ka[0] * kb[0] + ka[1] * kb[1]) / (Math.hypot(...ka) * Math.hypot(...kb));
+      return { cos: c, slant: pl.slant };
+    };
+    const [lo, hi] = opt.focalRange;
+    const N = 32;
+    let prev = null;
+    let prevF = 0;
+    for (let i = 0; i <= N; i++) {
+      const f = short * lo * (hi / lo) ** (i / N);
+      const a = angleAt(f);
+      if (!a) return null;
+      if (prev && Math.sign(a.cos) !== Math.sign(prev.cos)) {
+        // the right angle lies between: refine by bisection on cos
+        let f0 = prevF;
+        let f1 = f;
+        let c0 = prev.cos;
+        for (let k = 0; k < 20; k++) {
+          const fm = Math.sqrt(f0 * f1);
+          const am = angleAt(fm);
+          if (!am) return null;
+          if (Math.sign(am.cos) === Math.sign(c0)) {
+            f0 = fm;
+            c0 = am.cos;
+          } else f1 = fm;
+        }
+        const fm = Math.sqrt(f0 * f1);
+        return angleAt(fm).slant >= 20 ? fm : null;
+      }
+      prev = a;
+      prevF = f;
+    }
+    return null;
   }
 
   // Rows of similar things, unless the same repetition is already a
@@ -898,6 +1053,7 @@ export function createDetector(options = {}) {
       contrast: contrast / sw,
       sharp: sharpW ? sharp / sharpW : 0.5,
       cellRefs: cs.map((c) => [c.col, c.row]),
+      cellsOf: cs, // until the plane is estimated (analyze)
       // evidence: geometric-mean prominence, mean isolation and repeat
       prom: Math.exp(lprom / cs.length),
       iso: iso / cs.length,
@@ -1180,6 +1336,7 @@ export function createDetector(options = {}) {
           L.dirs.some(([p, a]) => ratio(S.period, p) < 1.2 && angleDiff(S.angle, a) < 12);
       });
       if (!host) return;
+      if (host.cellsOf && S.cellsOf) host.cellsOf = host.cellsOf.concat(S.cellsOf);
       const x1 = Math.max(host.x + host.w, S.x + S.w);
       const y1 = Math.max(host.y + host.h, S.y + S.h);
       host.x = Math.min(host.x, S.x);

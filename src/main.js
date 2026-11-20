@@ -140,6 +140,7 @@ function normalise(r, unit) {
     period: r.period / unit,
     period2: r.period2 ? r.period2 / unit : undefined,
     center: r.center ? { x: r.center.x / unit, y: r.center.y / unit } : null,
+    quad: r.quad ? r.quad.map(([x, y]) => [x / unit, y / unit]) : undefined,
     size: r.size ? r.size / unit : undefined,
     members: r.members
       ? r.members.map((m) => ({ ...m, x: m.x / unit, y: m.y / unit, w: m.w / unit, h: m.h / unit, t: m.t / unit }))

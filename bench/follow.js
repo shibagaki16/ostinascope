@@ -11,6 +11,13 @@
 //   IoU    overlap with the poster figure it sits on (visible part)
 //   held   share of frames in which a fully visible figure is playing
 //   ids    distinct playing tracks per figure (1 = never lost its identity)
+// and, per detection (step 2, the surface's tilt):
+//   tiltErr  angle between the estimated and the true surface normal
+//   falseTilt share of regions given a tilt while the view is frontal (<6°)
+//   fit      IoU of a region's outline with its figure: the outline
+//            (a trapezoid on a tilted surface) vs its plain box
+//   3:4      share of fig.2 (a 3 : 4 grid) lattice regions whose ratio
+//            rounds to 3 : 4 — as seen, and measured head-on
 //
 // Runs in a browser (the poster is drawn with canvas): open
 // bench/follow.html, or `node bench/page.mjs <url of follow.html>`.
@@ -20,10 +27,11 @@ import { createDetector, familyOf } from '../src/detector.js';
 import { createTracker, warpRegion } from '../src/tracker.js';
 import { createMotion, greyOf } from '../src/motion.js';
 import { applyH, invH, mulH, scaleH } from '../src/homography.js';
+import { simpleRatio } from '../src/mapping.js';
 
 const AW = 192;
 const AH = 416;
-const FOCAL = 206; // px: ≈ 50° across the short side
+const FOCAL = 278; // px: ≈ 38° across the short side (a phone's main camera, cropped to the screen)
 const FPS = 30;
 const ANALYSIS_EVERY = 3; // 10 Hz
 const LATENCY = 2; // frames until a result is back
@@ -130,6 +138,7 @@ function cameraPath(src, seed, frames) {
   let jy = 0;
   const shake = u(0.1, 0.5) / 57.3; // rad
   const out = [];
+  const normals = [];
   for (let f = 0; f < frames; f++) {
     const t = f / FPS;
     let ox = 0;
@@ -155,6 +164,7 @@ function cameraPath(src, seed, frames) {
     const roll = roll0 + (3 / 57.3) * Math.sin(0.9 * t);
     x = rotAxis(x, z, roll);
     y = cross(z, x);
+    normals.push([x[2], y[2], z[2]]); // the plane's normal (0, 0, 1) in the camera frame
     // plane (X, Y, 0) → image: K [r1 r2 t]
     const Rm = [x, y, z];
     const tt = Rm.map((row) => -(row[0] * C[0] + row[1] * C[1] + row[2] * C[2]));
@@ -166,6 +176,7 @@ function cameraPath(src, seed, frames) {
     const K = [FOCAL, 0, AW / 2, 0, FOCAL, AH / 2, 0, 0, 1];
     out.push(mulH(K, P.flat()));
   }
+  out.normals = normals;
   return out;
 }
 
@@ -274,9 +285,8 @@ function makeVariant(useMotion, trackerOpt) {
   };
 }
 
-async function runSequence(src, seed, frames, out, trackerOpt) {
+async function runSequence(src, seed, frames, out, trackerOpt, det, plane) {
   const Hs = cameraPath(src, seed, frames);
-  const det = createDetector({ rowSplit: 2 });
   const nz = rng(seed + 99);
   const noise = () => (nz() + nz() - 1) * 4;
   const variants = [makeVariant(false), makeVariant(true, trackerOpt)];
@@ -286,6 +296,7 @@ async function runSequence(src, seed, frames, out, trackerOpt) {
     ...r, cx: r.cx / unit, cy: r.cy / unit, w: r.w / unit, h: r.h / unit, period: r.period / unit,
     period2: r.period2 ? r.period2 / unit : undefined,
     center: r.center ? { x: r.center.x / unit, y: r.center.y / unit } : null,
+    quad: r.quad ? r.quad.map(([x, y]) => [x / unit, y / unit]) : undefined,
     size: r.size ? r.size / unit : undefined,
     members: r.members ? r.members.map((m) => ({ ...m, x: m.x / unit, y: m.y / unit, w: m.w / unit, h: m.h / unit, t: m.t / unit })) : undefined,
   });
@@ -296,6 +307,7 @@ async function runSequence(src, seed, frames, out, trackerOpt) {
     const grey = greyOf(rgba, AW, AH);
     if (f % ANALYSIS_EVERY === 0) analysis = { at: f + LATENCY, res: det.analyze(rgba, AW, AH), frame: f };
     const figsNow = src.figs.map((g) => ({ ...g, img: g.poly.map(([x, y]) => applyH(Hs[f], x, y)) }));
+    if (analysis && analysis.frame === f) measurePlanes(analysis.res, Hs.normals[f], figsNow, plane);
     const trueStep = f ? mulH(Hs[f], invH(Hs[f - 1])) : null;
     for (const V of variants) {
       let k = -1;
@@ -395,6 +407,116 @@ export async function strip({ seed = 1000, frames = 150, every = 15, photo = nul
   return cv;
 }
 
+// Step 2: the regions' surface tilt, outline fit and the grid's ratio.
+function measurePlanes(res, nTrue, figs, P) {
+  const slantTrue = (Math.acos(Math.min(1, Math.abs(nTrue[2]))) * 180) / Math.PI;
+  for (const r of res.regions) {
+    if (r.family !== 'line' && r.family !== 'lattice') continue;
+    P.regions++;
+    if (r.plane) {
+      const n = r.plane.normal;
+      const e = (Math.acos(Math.min(1, Math.abs(n[0] * nTrue[0] + n[1] * nTrue[1] + n[2] * nTrue[2]))) * 180) / Math.PI;
+      P.tiltErr.push(e);
+      if (slantTrue < 6) P.falseTilt++;
+    } else if (slantTrue >= 20) P.flatOnTilted++;
+    if (slantTrue < 6) P.frontal++;
+    if (slantTrue >= 20) P.tilted++;
+    // outline vs box against the figure it sits on
+    const box = [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
+    let best = null;
+    let bo = 0;
+    for (const g of figs) {
+      const vis = clip(g.img, VIEW);
+      if (vis.length < 3) continue;
+      const o = iou(box, vis);
+      if (o > bo) {
+        bo = o;
+        best = vis;
+      }
+    }
+    if (best && bo > 0.2 && r.plane) {
+      P.fitBox.push(bo);
+      P.fitQuad.push(iou(r.quad, best));
+    }
+    const g2 = figs.find((g) => g.id === 'fig2');
+    if (g2 && r.family === 'lattice') {
+      const vis = clip(g2.img, VIEW);
+      if (vis.length >= 3 && iou(box, vis) > 0.2) {
+        const seen = r.ratioSeen ?? r.ratio;
+        const is34 = (q) => {
+          const [a, b] = simpleRatio(Math.max(1, q));
+          return a === 3 && b === 4;
+        };
+        P.grid++;
+        if (is34(seen)) P.gridSeen++;
+        if (is34(r.ratio)) P.gridFlat++;
+        if (slantTrue >= 20) {
+          P.gridTilted++;
+          if (is34(seen)) P.gridTiltedSeen++;
+          if (is34(r.ratio)) P.gridTiltedFlat++;
+        }
+      }
+    }
+  }
+  P.focal = res.focal;
+}
+
+/** Frames with the detector's outlines drawn on (box dashed, surface outline solid). */
+export async function stripRegions({ seed = 1003, frames = 150, every = 25, warm = 60, photo = null } = {}) {
+  const src = photo ? await photoSource(photo) : await posterSource();
+  const Hs = cameraPath(src, seed + src.name.length, frames);
+  const nz = rng(seed + 99);
+  const noise = () => (nz() + nz() - 1) * 4;
+  const det = createDetector();
+  for (let f = 0; f < warm; f += 3) det.analyze(renderFrame(src, Hs[f], noise), AW, AH); // learn the focal length
+  const picks = [];
+  for (let f = warm; f < frames; f += every) picks.push(f);
+  const K = 2;
+  const cv = document.createElement('canvas');
+  cv.width = picks.length * (AW * K + 8);
+  cv.height = AH * K;
+  const g = cv.getContext('2d');
+  picks.forEach((f, i) => {
+    const rgba = renderFrame(src, Hs[f], noise);
+    const res = det.analyze(rgba, AW, AH);
+    const tmp = document.createElement('canvas');
+    tmp.width = AW;
+    tmp.height = AH;
+    tmp.getContext('2d').putImageData(new ImageData(rgba, AW, AH), 0, 0);
+    const ox = i * (AW * K + 8);
+    g.drawImage(tmp, ox, 0, AW * K, AH * K);
+    const n = Hs.normals[f];
+    const slantTrue = (Math.acos(Math.min(1, Math.abs(n[2]))) * 180) / Math.PI;
+    g.font = '600 13px monospace';
+    g.fillStyle = '#000';
+    g.fillRect(ox, AH * K - 22, AW * K, 22);
+    g.fillStyle = '#fff';
+    g.fillText(`true slant ${slantTrue.toFixed(0)}°  focal ${res.focal.toFixed(2)}`, ox + 6, AH * K - 7);
+    for (const r of res.regions) {
+      if (r.family !== 'line' && r.family !== 'lattice') continue;
+      const col = r.family === 'line' ? '#FFD21F' : '#FF4B36';
+      g.lineWidth = 1.5;
+      g.strokeStyle = col;
+      g.setLineDash([4, 4]);
+      g.strokeRect(ox + r.x * K, r.y * K, r.w * K, r.h * K);
+      g.setLineDash([]);
+      if (r.plane) {
+        g.lineWidth = 3;
+        g.beginPath();
+        r.quad.forEach(([x, y], j) => (j ? g.lineTo(ox + x * K, y * K) : g.moveTo(ox + x * K, y * K)));
+        g.closePath();
+        g.stroke();
+        const txt = `${r.type} ${r.plane.slant.toFixed(0)}°` + (r.ratioSeen ? ` ${r.ratioSeen.toFixed(2)}→${r.ratio.toFixed(2)}` : '');
+        g.fillStyle = 'rgba(0,0,0,0.75)';
+        g.fillRect(ox + r.quad[0][0] * K, r.quad[0][1] * K - 16, g.measureText(txt).width + 8, 16);
+        g.fillStyle = col;
+        g.fillText(txt, ox + r.quad[0][0] * K + 4, r.quad[0][1] * K - 4);
+      }
+    }
+  });
+  return cv;
+}
+
 const pct = (a, p) => {
   if (!a.length) return NaN;
   const s = [...a].sort((x, y) => x - y);
@@ -402,15 +524,20 @@ const pct = (a, p) => {
 };
 const mean = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN);
 
-export async function run({ seqs = 6, frames = 150, photos = [], tracker = {}, log = () => {} } = {}) {
+export async function run({ seqs = 6, frames = 150, photos = [], tracker = {}, detector = {}, log = () => {} } = {}) {
   const sources = [await posterSource()];
   for (const p of photos) sources.push(await photoSource(p));
   const report = [];
+  const planes = [];
+  // one phone: the detector (and the focal length it learns) persists
+  const det = createDetector({ rowSplit: 2, ...detector });
   for (const src of sources) {
     const out = [0, 1].map(() => ({ slip: [], slipFast: [], slipDet: [], iou: [], held: 0, visible: 0, ids: [] }));
+    const P = { regions: 0, tiltErr: [], falseTilt: 0, frontal: 0, tilted: 0, flatOnTilted: 0, fitBox: [], fitQuad: [],
+      grid: 0, gridSeen: 0, gridFlat: 0, gridTilted: 0, gridTiltedSeen: 0, gridTiltedFlat: 0, focal: 0 };
     const n = src.name === 'poster' ? seqs : Math.max(1, seqs >> 1);
     for (let s = 0; s < n; s++) {
-      await runSequence(src, 1000 + s * 17 + src.name.length, frames, out, tracker);
+      await runSequence(src, 1000 + s * 17 + src.name.length, frames, out, tracker, det, P);
       log(`${src.name} ${s + 1}/${n}`);
       await new Promise((r) => setTimeout(r, 0));
     }
@@ -428,6 +555,22 @@ export async function run({ seqs = 6, frames = 150, photos = [], tracker = {}, l
         trackFrames: o.slip.length,
       });
     }
+    planes.push({
+      source: src.name,
+      regions: P.regions,
+      tiltErrMedian: +pct(P.tiltErr, 0.5).toFixed(1),
+      tiltErrP90: +pct(P.tiltErr, 0.9).toFixed(1),
+      tiltedFound: P.tilted ? +(1 - P.flatOnTilted / P.tilted).toFixed(2) : null,
+      falseTilt: P.frontal ? +(P.falseTilt / P.frontal).toFixed(2) : null,
+      fitBox: P.fitBox.length ? +mean(P.fitBox).toFixed(3) : null,
+      fitQuad: P.fitQuad.length ? +mean(P.fitQuad).toFixed(3) : null,
+      grid34Seen: P.grid ? +(P.gridSeen / P.grid).toFixed(2) : null,
+      grid34HeadOn: P.grid ? +(P.gridFlat / P.grid).toFixed(2) : null,
+      tiltedGrid34Seen: P.gridTilted ? +(P.gridTiltedSeen / P.gridTilted).toFixed(2) : null,
+      tiltedGrid34HeadOn: P.gridTilted ? +(P.gridTiltedFlat / P.gridTilted).toFixed(2) : null,
+      gridRegions: P.grid,
+      focal: +P.focal.toFixed(2),
+    });
   }
-  return report;
+  return { follow: report, planes, focalTrue: +(FOCAL / AW).toFixed(2) };
 }

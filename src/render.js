@@ -144,6 +144,12 @@ export function createRenderer(canvas) {
   // -- pieces ------------------------------------------------------------
 
   function labelFor(tr, S) {
+    const base = labelBody(tr, S);
+    // a surface seen at an angle: how far it is turned away
+    return tr.plane ? `${base} ／ 傾き${Math.round(tr.plane.slant)}°` : base;
+  }
+
+  function labelBody(tr, S) {
     const sp = tr.spec;
     const px = Math.max(1, Math.round(tr.period * S));
     const n = pad2(tr.id);

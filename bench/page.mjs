@@ -42,4 +42,11 @@ chrome.kill();
 if (!res) { console.error('timed out'); process.exit(1); }
 if (res.error) { console.error(res.error); process.exit(1); }
 if (Array.isArray(res)) console.table(res);
-else console.log(JSON.stringify(res, null, 1));
+else {
+  for (const [k, v] of Object.entries(res)) {
+    if (Array.isArray(v) && v.length && typeof v[0] === 'object') {
+      console.log(k);
+      console.table(v);
+    } else console.log(k, JSON.stringify(v));
+  }
+}

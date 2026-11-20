@@ -23,13 +23,17 @@
     const log = (s) => { logEl.textContent = s; };
     window.benchResult = null;
     const tracker = q.get('tracker') ? JSON.parse(q.get('tracker')) : {};
-    run({ seqs: +(q.get('seqs') || 6), frames: +(q.get('frames') || 150), photos, tracker, log })
+    const detector = q.get('detector') ? JSON.parse(q.get('detector')) : {};
+    const table = (rows) => {
+      const cols = Object.keys(rows[0]);
+      return `<tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>` +
+        rows.map((r) => `<tr>${cols.map((c) => `<td>${r[c]}</td>`).join('')}</tr>`).join('');
+    };
+    run({ seqs: +(q.get('seqs') || 6), frames: +(q.get('frames') || 150), photos, tracker, detector, log })
       .then((rep) => {
         window.benchResult = rep;
-        const cols = Object.keys(rep[0]);
-        document.getElementById('out').innerHTML = `<tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>` +
-          rep.map((r) => `<tr>${cols.map((c) => `<td>${r[c]}</td>`).join('')}</tr>`).join('');
-        log('done');
+        document.getElementById('out').innerHTML = table(rep.follow) + '<tr><td>&nbsp;</td></tr>' + table(rep.planes);
+        log(`done (true focal ${rep.focalTrue})`);
       })
       .catch((e) => { window.benchResult = { error: String(e.stack || e) }; log(String(e)); });
   </script>

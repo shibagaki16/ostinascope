@@ -22,6 +22,23 @@ export function boxQuad(r) {
   return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }
 
+// The same corners in the same order as `ref` (the cyclic shift that puts
+// each corner nearest its counterpart), so blending moves corners, not
+// rotates them.
+function alignQuad(ref, q) {
+  let best = 0;
+  let bestD = Infinity;
+  for (let s = 0; s < 4; s++) {
+    let d = 0;
+    for (let i = 0; i < 4; i++) d += Math.hypot(ref[i][0] - q[(i + s) % 4][0], ref[i][1] - q[(i + s) % 4][1]);
+    if (d < bestD) {
+      bestD = d;
+      best = s;
+    }
+  }
+  return q.map((_, i) => q[(i + best) % 4]);
+}
+
 // cx, cy, w, h: the quad's bounding box (what matching and the sound use)
 function boundQuad(r) {
   const xs = r.quad.map((p) => p[0]);
@@ -153,6 +170,7 @@ export function createTracker(options = {}) {
       contrast: d.contrast, sharp: d.sharp, hue: d.hue, sat: d.sat,
       score: d.score, cells: d.cells, level: d.level,
       members: d.members, count: d.count, evenness: d.evenness, size: d.size,
+      plane: d.plane || null,
     };
   }
 
@@ -161,7 +179,7 @@ export function createTracker(options = {}) {
     const moved = tr.movedAt > tr.lastSeen;
     const sp = moved ? opt.smoothPosMoved : opt.smoothPos;
     const s = opt.smoothParam;
-    const dq = d.quad || boxQuad(d);
+    const dq = alignQuad(tr.quad, d.quad || boxQuad(d));
     const ocx = tr.cx;
     const ocy = tr.cy;
     tr.quad = tr.quad.map(([x, y], i) => [lerp(x, dq[i][0], sp), lerp(y, dq[i][1], sp)]);
@@ -186,6 +204,10 @@ export function createTracker(options = {}) {
         ? { x: lerp(tr.center.x, d.center.x, sp), y: lerp(tr.center.y, d.center.y, sp) }
         : { ...d.center };
     }
+    // the surface's tilt, as last seen (a lost estimate keeps the old one
+    // for a moment)
+    if (d.plane) tr.plane = d.plane;
+    else if (tr.plane && tr.hits % 4 === 0) tr.plane = null;
     tr.contrast = lerp(tr.contrast, d.contrast, s);
     tr.sharp = lerp(tr.sharp, d.sharp, s);
     tr.score = lerp(tr.score, d.score, s);
