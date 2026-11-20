@@ -129,7 +129,7 @@ export const rotAxis = (v, axis, ang) => {
 
 // A hand-held path over the plane: the point looked at wanders, the phone
 // tilts, rolls, comes closer and backs off, and shakes a little.
-function cameraPath(src, seed, frames) {
+export function cameraPath(src, seed, frames) {
   const r = rng(seed);
   const u = (a, b) => a + (b - a) * r();
   const W = src.w;
@@ -191,7 +191,7 @@ function cameraPath(src, seed, frames) {
 
 // Render the plane through H (plane → image) with mip-mapped bilinear
 // sampling, a touch of blur and sensor noise.
-function renderFrame(src, H, noise) {
+export function renderFrame(src, H, noise) {
   const inv = invH(H);
   const rgba = new Uint8ClampedArray(AW * AH * 4);
   const { mip } = src;

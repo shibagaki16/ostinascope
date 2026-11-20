@@ -20,6 +20,14 @@
 //      then follows the real spacing, not the squeezed one — and the row is
 //      extended with smaller (or larger) windows where the next thing
 //      should be.
+//      Real things vary too much in size for that line to be sure. Most real
+//      rows (chairs, posts, windows) are evenly spaced, though: then their
+//      image positions follow t = (α i + β)/(γ i + 1) for the i-th thing,
+//      which the gaps alone pin down. Gaps shrink with the square of the
+//      distance, sizes with the distance: so this reading is taken only when
+//      the sizes shrink the same way by about the square root of what the
+//      gaps do (a shelf spaced unevenly on purpose has growing gaps but equal
+//      sizes, and stays as it is).
 //
 // Pure module (no DOM).
 
@@ -58,6 +66,18 @@ export const ROW_DEFAULTS = Object.freeze({
   minSizeChange: 1.3,
   minSizeOrder: 0.8, // rank correlation of size with position along the row
   maxPerspResidual: 0.15, // sizes off their line, relative to the mean size (rms)
+  // evenly spaced rows in perspective (sizes only as a check)
+  maxEvenResidual: 0.12, // positions off the fit, relative to the mean gap (rms)
+  minEvenDepth: 1.12, // depth ratio end to end the gaps must show
+  // measured / expected size change (in log), allowed range … In perspective
+  // it is about 1. A window measuring a thing takes in some of the space
+  // around it, so where gaps are wider things look larger: with sizes that
+  // only follow the gaps (a shelf spaced unevenly on purpose) it comes out
+  // near 2 — hence the upper end.
+  evenSizeAgree: [0.4, 1.6],
+  evenSizeTight: 0.3, // … but sizes that lie close to their line must agree this closely (share of the expected)
+  evenMinSize: 3, // blocks: things smaller than this across the row are too small to check the sizes on
+  onWhy: null, // (reason, row) → why a row was not read as receding (for tuning; off)
 });
 
 // The detector's sensitivity slider, applied to the row thresholds. Only
@@ -239,15 +259,16 @@ export function createRowFinder(options = {}) {
   // Descriptor of the window at (wx, wy), size sz — both in blocks and
   // fractional (things shrink smoothly along a row) — into out. false if
   // it does not fit. The 3×3 cells share their 16 corners: read once.
-  function descAt(wx, wy, sz, out) {
+  function descAt(wx, wy, sz, out, szy = sz) {
     const { W1 } = cur;
     const bw = W1 - 1;
     const bh = gridH;
-    if (wx < 0 || wy < 0 || wx + sz > bw || wy + sz > bh || sz < 2) return false;
+    if (wx < 0 || wy < 0 || wx + sz > bw || wy + szy > bh || sz < 2 || szy < 2) return false;
     const C = NB + 1;
     const cut = [0, sz / 3, (2 * sz) / 3, sz];
-    for (let gy = 0; gy < 4; gy++) for (let gx = 0; gx < 4; gx++) iiAll(W1, wx + cut[gx], wy + cut[gy], grid16, (gy * 4 + gx) * C);
-    const area = (sz / 3) * (sz / 3);
+    const cuty = [0, szy / 3, (2 * szy) / 3, szy];
+    for (let gy = 0; gy < 4; gy++) for (let gx = 0; gx < 4; gx++) iiAll(W1, wx + cut[gx], wy + cuty[gy], grid16, (gy * 4 + gx) * C);
+    const area = (sz / 3) * (szy / 3);
     let h2 = 0;
     for (let gy = 0; gy < 3; gy++) {
       for (let gx = 0; gx < 3; gx++) {
@@ -284,15 +305,15 @@ export function createRowFinder(options = {}) {
 
   // Similarity to the anchor (danc) of a window of size sz centred near
   // (cx, cy) blocks: the best over shifts of up to ±range in steps of step.
-  function simSized(cx, cy, sz, range = 0.5, step = 0.5) {
+  function simSized(cx, cy, sz, range = 0.5, step = 0.5, szy = sz) {
     let best = -1;
     let bx = cx;
     let by = cy;
     for (let dy = -range; dy <= range + 1e-9; dy += step) {
       for (let dx = -range; dx <= range + 1e-9; dx += step) {
         const wx = cx - sz / 2 + dx;
-        const wy = cy - sz / 2 + dy;
-        if (!descAt(wx, wy, sz, dtmp)) continue;
+        const wy = cy - szy / 2 + dy;
+        if (!descAt(wx, wy, sz, dtmp, szy)) continue;
         let d = 0;
         for (let j = 0; j < ND; j++) d += danc[j] * dtmp[j];
         if (d > best) {
@@ -328,6 +349,30 @@ export function createRowFinder(options = {}) {
       if (den < 0) size = b.sz * f ** clamp((0.5 * (l - r)) / den, -0.5, 0.5);
     }
     return { size, sim: b.sim, cx: b.cx, cy: b.cy };
+  }
+
+  // A thing's size across the row (its height, for a row running sideways):
+  // the window keeps the anchor's length along the row and stretches across
+  // it. Unlike the plain size, the gaps along the row cannot sway it.
+  function acrossOf(cx, cy, s, across, lo, hi) {
+    let best = null;
+    const tries = [];
+    for (let sz = Math.max(2, lo); sz <= hi * 1.001; sz *= 1.1) {
+      const t = across === 'y' ? simSized(cx, cy, s, 1, 1, sz) : simSized(cx, cy, sz, 1, 1, s);
+      tries.push({ sz, ...t });
+    }
+    tries.forEach((t, i) => {
+      if (!best || t.sim > best.sim) best = { ...t, i };
+    });
+    if (!best) return null;
+    let size = best.sz;
+    if (best.i > 0 && best.i < tries.length - 1) {
+      const l = tries[best.i - 1].sim;
+      const r = tries[best.i + 1].sim;
+      const den = l - 2 * best.sim + r;
+      if (den < 0) size = best.sz * 1.1 ** clamp((0.5 * (l - r)) / den, -0.5, 0.5);
+    }
+    return size;
   }
 
   // Real positions along a receding row from apparent sizes (see 5. above):
@@ -381,6 +426,115 @@ export function createRowFinder(options = {}) {
     };
   }
 
+  // An evenly spaced row in perspective (see 5.): fit t = (α i + β)/(γ i + 1)
+  // to the positions, with a missed thing (a gap about twice the expected)
+  // skipping an index; check the sizes agree. Returns { pos, sizes,
+  // sizeChange, model } or null. `provisional`: three things, fitted exactly
+  // (only good enough to look for a fourth).
+  function evenPerspective(ts, ws, o, provisional = false) {
+    const n = ts.length;
+    if (n < (provisional ? 3 : 4)) return o.onReason && o.onReason('too few'), null;
+    const solveFor = (idx) => {
+      // t (γ i + 1) = α i + β  →  [i, 1, −i t] · (α, β, γ) = t
+      let a11 = 0, a12 = 0, a13 = 0, a22 = 0, a23 = 0, a33 = 0, b1 = 0, b2 = 0, b3 = 0;
+      for (let k = 0; k < n; k++) {
+        const i = idx[k];
+        const r = [i, 1, -i * ts[k]];
+        a11 += r[0] * r[0]; a12 += r[0] * r[1]; a13 += r[0] * r[2];
+        a22 += r[1] * r[1]; a23 += r[1] * r[2]; a33 += r[2] * r[2];
+        b1 += r[0] * ts[k]; b2 += r[1] * ts[k]; b3 += r[2] * ts[k];
+      }
+      const M = [[a11, a12, a13, b1], [a12, a22, a23, b2], [a13, a23, a33, b3]];
+      for (let c = 0; c < 3; c++) {
+        let pv = c;
+        for (let r = c + 1; r < 3; r++) if (Math.abs(M[r][c]) > Math.abs(M[pv][c])) pv = r;
+        if (Math.abs(M[pv][c]) < 1e-12) return null;
+        [M[c], M[pv]] = [M[pv], M[c]];
+        for (let r = 0; r < 3; r++) {
+          if (r === c) continue;
+          const f = M[r][c] / M[c][c];
+          for (let q = c; q < 4; q++) M[r][q] -= f * M[c][q];
+        }
+      }
+      return M.map((row, k) => row[3] / row[k]);
+    };
+    const tAt = (m, i) => (m[0] * i + m[1]) / (m[2] * i + 1);
+    let idx = ts.map((_, k) => k);
+    let m = solveFor(idx);
+    if (!m) return o.onReason && o.onReason('no fit'), null;
+    // a thing not found leaves a gap about twice the expected: skip an index
+    for (let it = 0; it < 2 && !provisional; it++) {
+      const next = [0];
+      let changed = false;
+      for (let k = 1; k < n; k++) {
+        const i = next[k - 1];
+        const step = tAt(m, i + 1) - tAt(m, i);
+        const gap = ts[k] - ts[k - 1];
+        const skip = step > 0 && gap > 1.6 * step ? Math.min(3, Math.round(gap / step)) : 1;
+        if (skip !== 1) changed = true;
+        next.push(i + skip);
+      }
+      if (!changed) break;
+      const m2 = solveFor(next);
+      if (!m2) break;
+      idx = next;
+      m = m2;
+    }
+    const i0 = idx[0];
+    const i1 = idx[n - 1];
+    for (let i = i0; i <= i1; i++) if (!(m[2] * i + 1 > 0)) return o.onReason && o.onReason('beyond vanishing point'), null;
+    const pred = idx.map((i) => tAt(m, i));
+    for (let k = 1; k < n; k++) if (!(pred[k] > pred[k - 1])) return o.onReason && o.onReason('order'), null;
+    const meanGap = (ts[n - 1] - ts[0]) / (i1 - i0);
+    const rms = Math.sqrt(pred.reduce((acc, v, k) => acc + (v - ts[k]) ** 2, 0) / n);
+    if (!provisional && rms > o.maxEvenResidual * meanGap) return o.onReason && o.onReason('gaps off the even fit'), null;
+    // depth end to end, and the sizes it implies (∝ 1/depth)
+    const Z = (i) => m[2] * i + 1;
+    const depth = Z(i1) / Z(i0); // > 1: the far end is the last
+    const pc = Math.max(depth, 1 / depth);
+    if (pc < o.minEvenDepth) return o.onReason && o.onReason('too little depth'), null;
+    // measured size change, from a line through the sizes
+    const mt = ts.reduce((p, q) => p + q, 0) / n;
+    const mw = ws.reduce((p, q) => p + q, 0) / n;
+    let sxy = 0;
+    let sxx = 0;
+    for (let k = 0; k < n; k++) {
+      sxy += (ts[k] - mt) * (ws[k] - mw);
+      sxx += (ts[k] - mt) ** 2;
+    }
+    const sl = sxx > 0 ? sxy / sxx : 0;
+    const w0 = mw + sl * (ts[0] - mt);
+    const w1 = mw + sl * (ts[n - 1] - mt);
+    if (!(w0 > 0 && w1 > 0)) return o.onReason && o.onReason('sizes'), null;
+    // sizes: larger at the near end (depth > 1: the first is nearer)
+    const measured = Math.log(w0 / w1); // > 0 when the first is larger
+    const expected = Math.log(depth);
+    if (Math.sign(measured) !== Math.sign(expected)) return o.onReason && o.onReason('sizes the wrong way'), null;
+    const agree = measured / expected;
+    if (agree < o.evenSizeAgree[0] || agree > o.evenSizeAgree[1]) return o.onReason && o.onReason('size change disagrees'), null;
+    // how sure the measured change is: sizes off their line (rms) → the
+    // uncertainty of its ends. Things all alike (books) give sure sizes, and
+    // then the gaps must not claim more depth than the sizes show — a shelf
+    // spaced unevenly on purpose, seen a little from the side, has some
+    // real perspective in its sizes and much more "depth" in its gaps.
+    let r2 = 0;
+    for (let k = 0; k < n; k++) r2 += (ws[k] - (mw + sl * (ts[k] - mt))) ** 2;
+    const rmsRel = Math.sqrt(r2 / n) / mw;
+    const sigma = rmsRel * Math.sqrt(12 / n); // log-change uncertainty, roughly
+    if (Math.abs(measured - expected) > Math.max(2 * sigma, o.evenSizeTight * Math.abs(expected))) {
+      return o.onReason && o.onReason('sizes too sure to agree'), null;
+    }
+    const span = ts[n - 1] - ts[0];
+    const zMean = idx.reduce((p, i) => p + 1 / Z(i), 0) / n;
+    return {
+      pos: idx.map((i) => ts[0] + ((i - i0) / (i1 - i0)) * span),
+      sizes: idx.map((i) => (mw * (1 / Z(i))) / zMean),
+      sizeChange: pc,
+      model: { m, idx, mw, zMean },
+      even: true,
+    };
+  }
+
   function cos(a, b) {
     ensure(a);
     ensure(b);
@@ -428,6 +582,10 @@ export function createRowFinder(options = {}) {
     const B = opt.block;
     const k = B * scale; // block → analysis px
     const out = [];
+    const why = (reason, r) => {
+      if (opt.onWhy) opt.onWhy(reason, r);
+      return null;
+    };
     // the same row is found from several of its things (each can be the
     // anchor): its perspective is worked out once per frame
     const recedeMemo = new Map();
@@ -446,33 +604,58 @@ export function createRowFinder(options = {}) {
       const gp = ts0.slice(1).map((t, i) => t - ts0[i]);
       let trend = 0;
       if (gp.length >= 2) {
-        let up = 0;
-        let down = 0;
-        for (let i = 1; i < gp.length; i++) {
-          if (gp[i] > gp[i - 1] * 1.03) up++;
-          else if (gp[i] < gp[i - 1] / 1.03) down++;
+        if (Math.max(...gp) / Math.min(...gp) < 1.15) return why('gaps flat', row0);
+        // the gaps grow (or shrink) along the row: rank correlation with
+        // their place (real things sit a little off their spots)
+        let trendSum = 0;
+        if (gp.length === 2) trendSum = Math.sign(gp[1] - gp[0]);
+        else {
+          const r = gp.map((g, i) => [g, i]).sort((a, b) => a[0] - b[0]);
+          const rk = new Array(gp.length);
+          r.forEach(([, i], j) => (rk[i] = j));
+          let d2 = 0;
+          for (let i = 0; i < gp.length; i++) d2 += (rk[i] - i) ** 2;
+          const m = gp.length;
+          const rho = 1 - (6 * d2) / (m * (m * m - 1));
+          if (Math.abs(rho) < 0.6) return why('gaps not one way', row0);
+          trendSum = Math.sign(rho);
         }
-        // every change one way (one exception per four, for longer rows)
-        const steps = gp.length - 1;
-        if (Math.max(up, down) < steps - Math.floor(steps / 4) || Math.min(up, down) > Math.floor(steps / 4) ||
-          Math.max(...gp) / Math.min(...gp) < 1.15) return null;
-        trend = up > down ? 1 : -1;
+        trend = trendSum;
       }
-      // then a quick look at the two ends' sizes
+      // a cheap look at the two ends: when they clearly match, skip the
+      // full measurement (most rows face the camera)
       const end0 = sizeOf(row0[0].x + s / 2, row0[0].y + s / 2, lo, hi, true);
       const end1 = sizeOf(row0[row0.length - 1].x + s / 2, row0[row0.length - 1].y + s / 2, lo, hi, true);
-      if (!end0 || !end1 || Math.max(end0.size, end1.size) / Math.min(end0.size, end1.size) < 1.12) return null;
+      if (end0 && end1 && Math.max(end0.size, end1.size) / Math.min(end0.size, end1.size) < 1.05) return why('ends same size (quick)', row0);
       const measure = (p) => {
         const z = sizeOf(p.x + s / 2, p.y + s / 2, lo, hi);
         return z ? { ...p, size: z.size } : { ...p, size: s };
       };
       let row = row0.map(measure);
-      // nearer things are larger and further apart: sizes must shrink the
-      // way the gaps do
-      const ws0 = row.map((p) => p.size);
-      if (trend && Math.sign(ws0[ws0.length - 1] - ws0[0]) !== trend) return null;
+      // nearer things are larger and further apart: sizes (a line through
+      // all of them) must change, and the way the gaps do
+      {
+        const ts1 = row.map((p) => u({ x: p.x, y: p.y }));
+        const ws1 = row.map((p) => p.size);
+        const n1 = ts1.length;
+        const mt = ts1.reduce((a2, b2) => a2 + b2, 0) / n1;
+        const mw = ws1.reduce((a2, b2) => a2 + b2, 0) / n1;
+        let sxy = 0;
+        let sxx = 0;
+        for (let i = 0; i < n1; i++) {
+          sxy += (ts1[i] - mt) * (ws1[i] - mw);
+          sxx += (ts1[i] - mt) ** 2;
+        }
+        const sl = sxx > 0 ? sxy / sxx : 0;
+        const w0 = mw + sl * (ts1[0] - mt);
+        const w1 = mw + sl * (ts1[n1 - 1] - mt);
+        if (!(w0 > 0 && w1 > 0) || Math.max(w0, w1) / Math.min(w0, w1) < 1.08) return why('ends same size', row);
+        if (trend && Math.sign(w1 - w0) !== trend) return why('sizes against gaps', row);
+      }
       const fit = (r) => perspectivePositions(r.map((p) => u({ x: p.x, y: p.y })), r.map((p) => p.size), opt);
       let P = fit(row);
+      // the sizes alone are not sure: an evenly spaced row, read from its gaps
+      if (!P) return recedeEven(row, s, need, line, u, why);
       // three things: too few to judge, but enough to look for a fourth
       if (!P && row.length === 3) P = perspectivePositions(row.map((p) => u({ x: p.x, y: p.y })), row.map((p) => p.size), { ...opt, provisional: true });
       if (!P) return null;
@@ -515,8 +698,58 @@ export function createRowFinder(options = {}) {
       // a provisional model must have grown into a row that stands on its own
       if (row.length < 4 || !fit(row)) return null;
       P = fit(row);
-      return { row: row.map((p, i) => ({ ...p, size: P.sizes[i] })), pos: P.pos, sizeChange: P.sizeChange };
+      return { row: row.map((p, i) => ({ ...p, size: P.sizes[i] })), pos: P.pos, sizeChange: P.sizeChange, by: 'sizes' };
     }
+    // 5b. An evenly spaced receding row (evenPerspective): grow it at both
+    // ends where the next thing should be, and keep it only when it stands.
+    function recedeEven(row0, s, need, line, u, why) {
+      let reason = '';
+      // the check on the sizes uses each thing's size across the row
+      const across = Math.abs(line.ux) >= Math.abs(line.uy) ? 'y' : 'x';
+      const lo = Math.max(2, s * 0.55);
+      const hi = s * 1.8;
+      const acrossSize = (p) => (p.across ??= acrossOf(p.x + s / 2, p.y + s / 2, s, across, lo, hi) || p.size);
+      const at = (r) => evenPerspective(r.map((p) => u({ x: p.x, y: p.y })), r.map(acrossSize), { ...opt, onReason: (x) => (reason = x) }, r.length < 4);
+      let row = row0.map((p) => ({ ...p }));
+      // too small to measure (a distant shelf): the sizes cannot vouch for
+      // the gaps, and the gaps alone cannot tell perspective from a rhythm
+      if (Math.min(...row.map(acrossSize)) < opt.evenMinSize) return why('even: things too small to check', row);
+      let E = at(row);
+      if (!E) return why(`even: ${reason}`, row);
+      for (const end of [1, -1]) {
+        for (let tries = 0; tries < 6 && row.length < opt.maxCount; tries++) {
+          const n = row.length;
+          const ts = row.map((p) => u({ x: p.x, y: p.y }));
+          const { m, idx, mw, zMean } = E.model;
+          const i = end > 0 ? idx[n - 1] + 1 : idx[0] - 1;
+          const zi = m[2] * i + 1;
+          if (!(zi > 0)) break;
+          const tn = (m[0] * i + m[1]) / zi;
+          const wn = (mw * (1 / zi)) / zMean;
+          if (!(wn >= 2) || wn > 3 * s) break;
+          const base = row[end > 0 ? n - 1 : 0];
+          const bt = ts[end > 0 ? n - 1 : 0];
+          if ((tn - bt) * end <= 0) break;
+          const cx = base.x + s / 2 + (tn - bt) * line.ux;
+          const cy = base.y + s / 2 + (tn - bt) * line.uy;
+          const z = sizeOf(cx, cy, Math.max(2, wn * 0.8), wn * 1.25);
+          if (!z || z.sim < need) break;
+          const mid = simSized((cx + base.x + s / 2) / 2, (cy + base.y + s / 2) / 2, (z.size + base.size) / 2);
+          if (mid.sim > Math.min(z.sim, base.sim || 1) - opt.minDip) break;
+          const np = { x: z.cx - s / 2, y: z.cy - s / 2, sim: z.sim, size: z.size, grown: true };
+          const next = end > 0 ? [...row, np] : [np, ...row];
+          const E2 = at(next);
+          if (!E2) break;
+          row = next;
+          E = E2;
+        }
+      }
+      if (row.length < 4) return why('even: three, did not grow', row);
+      E = evenPerspective(row.map((p) => u({ x: p.x, y: p.y })), row.map(acrossSize), { ...opt, onReason: (x) => (reason = x) });
+      if (!E) return why(`even (grown): ${reason}`, row);
+      return { row: row.map((p, k) => ({ ...p, size: E.sizes[k] })), pos: E.pos, sizeChange: E.sizeChange, by: 'gaps' };
+    }
+
     for (const s of pass.sizes) {
       const g = describe(bw, bh, s);
       if (!g || g.n < 6) continue;
@@ -705,6 +938,7 @@ export function createRowFinder(options = {}) {
           gap: mean * k,
           evenness: mean > 0 ? sd / mean : 0,
           receding: persp ? persp.sizeChange : 0,
+          recedingBy: persp ? persp.by : null,
           sim,
           // the same row read with its perspective beats a reading without
           score: row.length + sim + (persp ? 0.5 : 0),
@@ -810,6 +1044,7 @@ export function createRowFinder(options = {}) {
       count: r.members.length,
       evenness: r.evenness,
       receding: r.receding || 0, // size change end to end (0: not receding)
+      recedingBy: r.recedingBy || null, // 'sizes' (their line) or 'gaps' (an evenly spaced row)
       // along-row position (0 = first) and sideways offset of every member
       members: r.members.map((m, i) => ({
         x: m.x, y: m.y, w: m.w, h: m.h, sim: m.sim,
