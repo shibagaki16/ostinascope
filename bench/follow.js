@@ -24,19 +24,20 @@
 
 import { drawPoster, loadPoster, boundsOf, context } from '../src/poster.js';
 import { createDetector, familyOf } from '../src/detector.js';
-import { createTracker, warpRegion } from '../src/tracker.js';
-import { createMotion, greyOf } from '../src/motion.js';
-import { applyH, invH, mulH, scaleH } from '../src/homography.js';
+import { createTracker } from '../src/tracker.js';
+import { greyOf } from '../src/motion.js';
+import { createFollower } from '../src/follow.js';
+import { applyH, invH, mulH } from '../src/homography.js';
 import { simpleRatio } from '../src/mapping.js';
 
-const AW = 192;
-const AH = 416;
-const FOCAL = 278; // px: ≈ 38° across the short side (a phone's main camera, cropped to the screen)
-const FPS = 30;
-const ANALYSIS_EVERY = 3; // 10 Hz
-const LATENCY = 2; // frames until a result is back
+export const AW = 192;
+export const AH = 416;
+export const FOCAL = 278; // px: ≈ 38° across the short side (a phone's main camera, cropped to the screen)
+export const FPS = 30;
+export const ANALYSIS_EVERY = 3; // 10 Hz
+export const LATENCY = 2; // frames until a result is back
 
-function rng(seed) {
+export function rng(seed) {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -49,7 +50,7 @@ function rng(seed) {
 
 // ---------------------------------------------------------------- sources
 
-function mipmaps(img) {
+export function mipmaps(img) {
   const levels = [{ w: img.width, h: img.height, d: Float32Array.from(img.data) }];
   while (levels.length < 8) {
     const a = levels[levels.length - 1];
@@ -70,7 +71,7 @@ function mipmaps(img) {
   return levels;
 }
 
-async function posterSource() {
+export async function posterSource() {
   const spec = await loadPoster();
   await document.fonts.ready;
   const cv = drawPoster(spec, 1);
@@ -103,12 +104,12 @@ async function photoSource(url) {
 
 // ---------------------------------------------------------------- camera
 
-const norm = (v) => {
+export const norm = (v) => {
   const l = Math.hypot(...v);
   return v.map((c) => c / l);
 };
-const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const rotAxis = (v, axis, ang) => {
+export const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+export const rotAxis = (v, axis, ang) => {
   // Rodrigues
   const [x, y, z] = axis;
   const c = Math.cos(ang);
@@ -222,7 +223,7 @@ function renderFrame(src, H, noise) {
 
 // ---------------------------------------------------------------- geometry
 
-function area(poly) {
+export function area(poly) {
   let a = 0;
   for (let i = 0; i < poly.length; i++) {
     const [x0, y0] = poly[i];
@@ -232,7 +233,7 @@ function area(poly) {
   return Math.abs(a) / 2;
 }
 // Sutherland–Hodgman: subject clipped by a convex polygon
-function clip(subject, by) {
+export function clip(subject, by) {
   let out = subject;
   const orient = Math.sign(by.reduce((s, p, i) => {
     const q = by[(i + 1) % by.length];
@@ -258,8 +259,8 @@ function clip(subject, by) {
   }
   return out;
 }
-const VIEW = [[0, 0], [AW, 0], [AW, AH], [0, AH]];
-function iou(a, b) {
+export const VIEW = [[0, 0], [AW, 0], [AW, AH], [0, AH]];
+export function iou(a, b) {
   const i = area(clip(a, b));
   return i / Math.max(1e-9, area(a) + area(b) - i);
 }
@@ -272,12 +273,14 @@ function makeVariant(useMotion, trackerOpt) {
   return {
     useMotion,
     tracker: createTracker(trackerOpt),
-    motion: useMotion ? createMotion() : null,
+    follower: useMotion ? createFollower() : null,
     pending: [], // [applyAtFrame, result, captureFrame, motionIndex]
     last: new Map(), // track id → quad (px) in the previous frame
     slip: [],
     slipFast: [],
     slipDet: [], // frames in which a detection was taken in
+    split: 0, // frames in which a flat scene was split into several surfaces
+    frames: 0,
     iou: [],
     held: 0,
     visible: 0,
@@ -311,10 +314,11 @@ async function runSequence(src, seed, frames, out, trackerOpt, det, plane) {
     const trueStep = f ? mulH(Hs[f], invH(Hs[f - 1])) : null;
     for (const V of variants) {
       let k = -1;
-      if (V.motion) {
-        const m = V.motion.push(grey, AW, AH);
+      if (V.follower) {
+        const m = V.follower.step(grey, AW, AH, V.tracker, t);
         k = m.k;
-        if (m.H) V.tracker.warp(scaleH(m.H, 1 / unit), t);
+        V.frames++;
+        if (m.surfaces && m.surfaces.size > 1) V.split++;
       }
       if (analysis && analysis.frame === f) V.pending.push({ ...analysis, k });
       let updated = false;
@@ -322,12 +326,8 @@ async function runSequence(src, seed, frames, out, trackerOpt, det, plane) {
         const p = V.pending.shift();
         updated = true;
         let dets = p.res.regions.map(toV);
-        if (V.motion) {
-          const C = V.motion.chain(p.k);
-          if (C) {
-            const Cv = scaleH(C, 1 / unit);
-            dets = dets.map((d) => warpRegion(d, Cv));
-          }
+        if (V.follower) {
+          dets = V.follower.place(dets, p.k, unit) || dets;
           V.tracker.update(dets, t, view, () => 1500);
         } else {
           // as the app did: stamped with the capture time
@@ -384,6 +384,8 @@ async function runSequence(src, seed, frames, out, trackerOpt, det, plane) {
     o.slip.push(...V.slip);
     o.slipFast.push(...V.slipFast);
     o.slipDet.push(...V.slipDet);
+    o.split = (o.split || 0) + V.split;
+    o.frames = (o.frames || 0) + V.frames;
     o.iou.push(...V.iou);
     o.held += V.held;
     o.visible += V.visible;
@@ -517,12 +519,12 @@ export async function stripRegions({ seed = 1003, frames = 150, every = 25, warm
   return cv;
 }
 
-const pct = (a, p) => {
+export const pct = (a, p) => {
   if (!a.length) return NaN;
   const s = [...a].sort((x, y) => x - y);
   return s[Math.min(s.length - 1, Math.floor(p * s.length))];
 };
-const mean = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN);
+export const mean = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN);
 
 export async function run({ seqs = 6, frames = 150, photos = [], tracker = {}, detector = {}, log = () => {} } = {}) {
   const sources = [await posterSource()];
@@ -549,6 +551,7 @@ export async function run({ seqs = 6, frames = 150, photos = [], tracker = {}, d
         slipP90: +pct(o.slip, 0.9).toFixed(2),
         slipFast: +mean(o.slipFast).toFixed(2),
         slipDet: +mean(o.slipDet).toFixed(2),
+        falseSplit: o.frames ? +(o.split / o.frames).toFixed(3) : null,
         iou: src.figs.length ? +mean(o.iou).toFixed(3) : null,
         held: o.visible ? +(o.held / o.visible).toFixed(3) : null,
         idsPerFigure: o.ids.length ? +mean(o.ids).toFixed(2) : null,

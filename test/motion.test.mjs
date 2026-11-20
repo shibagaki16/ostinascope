@@ -124,3 +124,59 @@ test('tracker: a turn turns the quad and the stripe angle', () => {
   assert.ok(Math.abs(r.period - 0.1) < 1e-3);
   assert.ok(Math.abs(r.quad[0][1] - r.quad[1][1]) > 0.05, 'top edge no longer level');
 });
+
+test('motion: two surfaces moving differently are told apart, each with its own motion', () => {
+  // upper part: a far wall (moves little); lower part: a near floor (moves more, and shears)
+  const Hwall = [1, 0, 1, 0, 1, -0.5, 0, 0, 1];
+  const Hfloor = about([1, 0.01, 3, 0, 1.005, 1.5, 0, 0.00005, 1]);
+  const split = 240;
+  const two = (Mw, Mf) => {
+    const iw = invH(Mw);
+    const iff = invH(Mf);
+    const f = (x, y) => (y < split ? scene(...applyH(iw, x, y)) : scene(...applyH(iff, x + 500, y)));
+    return greyOf(S.render(W, H, f, { ss: 2, noise: 0.015 }), W, H);
+  };
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const mo = createMotion();
+  mo.push(two(I, I), W, H);
+  let Aw = I;
+  let Af = I;
+  let r;
+  // surfaces are told apart over several frames (segFrames)
+  for (let i = 0; i < 10; i++) {
+    Aw = mulH(Hwall, Aw);
+    Af = mulH(Hfloor, Af);
+    r = mo.push(two(Aw, Af), W, H);
+  }
+  assert.ok(r.ok);
+  assert.ok(r.surfaces.size >= 2, `surfaces found: ${r.surfaces.size}`);
+  const top = mo.surfaceIn([[10, 20], [180, 20], [180, 200], [10, 200]]);
+  const bottom = mo.surfaceIn([[10, 280], [180, 280], [180, 400], [10, 400]]);
+  assert.ok(top && bottom && top.id !== bottom.id, `top ${JSON.stringify(top)} bottom ${JSON.stringify(bottom)}`);
+  assert.ok(top.share > 0.8 && bottom.share > 0.8);
+  // each surface's own motion, checked where it is
+  const at = (Hm, x, y) => applyH(Hm, x, y);
+  // the floor is drawn 500 px along its own texture: its image motion is
+  // Hfloor seen through that offset
+  const T = [1, 0, 500, 0, 1, 0, 0, 0, 1];
+  const floorImg = mulH(invH(T), mulH(Hfloor, T));
+  const [ex, ey] = at(r.surfaces.get(bottom.id), 96, 330);
+  const [tx, ty] = at(floorImg, 96, 330);
+  assert.ok(Math.hypot(ex - tx, ey - ty) < 0.6, `floor motion off by ${Math.hypot(ex - tx, ey - ty).toFixed(2)} px`);
+  const [wx, wy] = at(r.surfaces.get(top.id), 96, 100);
+  const [vx, vy] = at(Hwall, 96, 100);
+  assert.ok(Math.hypot(wx - vx, wy - vy) < 0.6, `wall motion off by ${Math.hypot(wx - vx, wy - vy).toFixed(2)} px`);
+});
+
+test('motion: one surface stays one (no split from noise)', () => {
+  const mo = createMotion();
+  let acc = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  mo.push(frame(acc), W, H);
+  const step = rot(0.8, 1.01);
+  let r;
+  for (let i = 0; i < 10; i++) {
+    acc = mulH(step, acc);
+    r = mo.push(frame(acc), W, H);
+  }
+  assert.equal(r.surfaces.size, 1);
+});

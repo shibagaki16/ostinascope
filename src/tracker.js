@@ -171,6 +171,7 @@ export function createTracker(options = {}) {
       score: d.score, cells: d.cells, level: d.level,
       members: d.members, count: d.count, evenness: d.evenness, size: d.size,
       plane: d.plane || null,
+      surface: d.surface ?? null, // which surface the camera motion puts it on
     };
   }
 
@@ -206,6 +207,7 @@ export function createTracker(options = {}) {
     }
     // the surface's tilt, as last seen (a lost estimate keeps the old one
     // for a moment)
+    if (d.surface != null) tr.surface = d.surface;
     if (d.plane) tr.plane = d.plane;
     else if (tr.plane && tr.hits % 4 === 0) tr.plane = null;
     tr.contrast = lerp(tr.contrast, d.contrast, s);
@@ -338,13 +340,15 @@ export function createTracker(options = {}) {
 
   /**
    * Camera motion since the last call: H takes view-unit points of the
-   * previous frame to this one. Every track moves with it.
+   * previous frame to this one — one homography for all tracks, or a
+   * function giving each track its own (the surface it is on).
    */
   function warp(H, t) {
+    const Hof = typeof H === 'function' ? H : () => H;
     for (const tr of tracks) {
       const ox = tr.cx;
       const oy = tr.cy;
-      warpRegion(tr, H);
+      warpRegion(tr, Hof(tr));
       const dt = Math.max(1e-3, (t - (Number.isFinite(tr.movedAt) ? tr.movedAt : t - 33)) / 1000);
       tr.vx = lerp(tr.vx, (tr.cx - ox) / dt, 0.3);
       tr.vy = lerp(tr.vy, (tr.cy - oy) / dt, 0.3);

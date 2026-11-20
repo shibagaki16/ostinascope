@@ -3,9 +3,9 @@
 // (≈30 Hz) keeps every track on the surface it was found on.
 
 import { createAnalyzer } from './analysis.js';
-import { createTracker, warpRegion } from './tracker.js';
-import { createMotion, greyOf } from './motion.js';
-import { scaleH } from './homography.js';
+import { createTracker } from './tracker.js';
+import { greyOf } from './motion.js';
+import { createFollower } from './follow.js';
 import { AudioEngine } from './audio.js';
 import { specFor, levelFor, panFor, fadeBarsFor } from './mapping.js';
 import { createRenderer } from './render.js';
@@ -21,7 +21,8 @@ const MOTION_MS = 30; // camera motion: every new camera frame (≈30 Hz)
 
 const analyzer = createAnalyzer();
 const tracker = createTracker();
-const motion = createMotion();
+const follower = createFollower();
+const motion = follower.motion;
 const audio = new AudioEngine();
 const viewEl = $('#view');
 const renderer = createRenderer(viewEl);
@@ -35,6 +36,7 @@ const state = {
   debug: params.has('debug'),
   follow: !params.has('nofollow'), // move tracks with the camera motion
   motionOk: false,
+  surfaces: [], // surfaces told apart by their motion (when more than one)
   maxVoices: 6,
   insets: { top: 0, bottom: 0 },
   tracks: [],
@@ -86,7 +88,7 @@ function layout() {
   if (aspectChanged) {
     // coordinates changed under the tracks; start over
     tracker.reset();
-    motion.reset();
+    follower.reset();
     for (const id of audio.voices.keys()) audio.fadeOut(id, 1);
   }
 }
@@ -149,23 +151,22 @@ function normalise(r, unit) {
 }
 
 // One camera frame: how did the camera move since the last one? Every
-// track moves with it, so outlines stay on their surface between analyses.
-// Returns the frame's motion index (-1 when not following).
+// track moves with the surface it is on, so outlines stay put between
+// analyses. Returns the frame's motion index (-1 when not following).
 function follow(img, now) {
   if (!state.follow) return -1;
   const t0 = performance.now();
   grey = greyOf(img.data, img.width, img.height, grey);
-  const m = motion.push(grey, img.width, img.height);
+  const m = follower.step(grey, img.width, img.height, tracker, now);
   state.motionOk = m.ok;
+  state.tracks = tracker.tracks;
+  state.surfaces = follower.surfaces();
   const ms = performance.now() - t0;
   state.stats.motionMs = state.stats.motionMs ? state.stats.motionMs * 0.9 + ms * 0.1 : ms;
   if (state.debug) {
     state.motionPoints = motion.points;
-    state.motionStats = `${motion.stats.inliers}/${motion.stats.tracked} ${state.stats.motionMs.toFixed(1)}ms`;
-  }
-  if (m.H) {
-    tracker.warp(scaleH(m.H, 1 / Math.min(img.width, img.height)), now);
-    state.tracks = tracker.tracks;
+    state.motionStats = `${motion.stats.inliers}/${motion.stats.tracked} ${state.stats.motionMs.toFixed(1)}ms` +
+      (motion.stats.planes > 1 ? ` ${motion.stats.planes} surfaces` : '');
   }
   return m.k;
 }
@@ -185,10 +186,9 @@ function analyze(now, img, k) {
     const viewN = { w: procW / unit, h: procH / unit };
     let dets = res.regions.map((r) => normalise(r, unit));
     let t = now;
-    const C = k >= 0 && state.follow ? motion.chain(k) : null;
-    if (C) {
-      const Cv = scaleH(C, 1 / unit);
-      dets = dets.map((d) => warpRegion(d, Cv));
+    const placed = k >= 0 && state.follow ? follower.place(dets, k, unit) : null;
+    if (placed) {
+      dets = placed;
       t = state.now;
     }
     tracker.update(dets, t, viewN, (tr) => fadeBarsFor(tr) * audio.bar * 1000 + 150);
@@ -323,7 +323,7 @@ function stalled(src, ts) {
   if (src.kind !== 'camera' || document.hidden) return;
   if (ts - stall > 400 && state.tracks.length) {
     tracker.reset();
-    motion.reset();
+    follower.reset();
     state.tracks = [];
     state.trackById = new Map();
     state.followers = new Map();
@@ -402,7 +402,7 @@ async function start(mode) {
   state.mode = mode;
   document.body.dataset.mode = mode;
   tracker.reset();
-  motion.reset();
+  follower.reset();
   for (const id of audio.voices.keys()) audio.fadeOut(id, 0.5);
   $('#start').hidden = true;
   document.body.classList.add('running');
@@ -465,7 +465,8 @@ const followEl = $('#follow');
 followEl.checked = state.follow;
 followEl.addEventListener('change', () => {
   state.follow = followEl.checked;
-  motion.reset();
+  follower.reset();
+  state.surfaces = [];
 });
 
 const dbg = $('#dbg');

@@ -14,6 +14,9 @@ export const COLORS = {
 const FONT = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
 
 const pad2 = (n) => String(n % 100).padStart(2, '0');
+/** A surface's letter (stable for its id): 面A, 面B, … */
+export const surfaceName = (id) => `面${String.fromCharCode(65 + (id % 26))}`;
+const SURFACE_TINTS = ['#F4F1EA', '#7C9DFF', '#5BE39B', '#FF4B36', '#FFD21F'];
 
 function rgba(hex, a) {
   const n = parseInt(hex.slice(1), 16);
@@ -262,7 +265,7 @@ export function createRenderer(canvas) {
     }
   }
 
-  function drawTrack(tr, S, now, bounds) {
+  function drawTrack(tr, S, now, bounds, surfaceTag = '') {
     const color = COLORS[tr.type] || '#fff';
     const x = (tr.cx - tr.w / 2) * S;
     const y = (tr.cy - tr.h / 2) * S;
@@ -300,7 +303,7 @@ export function createRenderer(canvas) {
     stroke(outline, color, 1, 0.45 + 0.4 * f);
     stroke(quadCorners(q, 16), color, 2 + 1.5 * f, 1);
     glyph(tr, S, color, 0.85);
-    const text = labelFor(tr, S) + (tr.unison ? ` ＝${pad2(tr.unison)}` : '');
+    const text = labelFor(tr, S) + (tr.unison ? ` ＝${pad2(tr.unison)}` : '') + surfaceTag;
     ctx.font = `500 10.5px ${FONT}`;
     const tw = ctx.measureText(text).width + 8;
     const lx = Math.max(4, Math.min(x, W - 4 - tw));
@@ -446,12 +449,38 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  // Debug: the corners the camera motion is followed by.
+  // Debug: the corners the camera motion is followed by, coloured by the
+  // surface they move with.
   function drawMotion(pts, k) {
     if (!pts || !pts.n) return;
     ctx.save();
-    ctx.fillStyle = 'rgba(91,227,155,0.85)';
-    for (let i = 0; i < pts.n; i++) ctx.fillRect(pts.x[i] * k - 1, pts.y[i] * k - 1, 2, 2);
+    for (let i = 0; i < pts.n; i++) {
+      const id = pts.surface ? pts.surface[i] : 0;
+      ctx.fillStyle = id < 0 ? 'rgba(255,255,255,0.5)' : SURFACE_TINTS[id % SURFACE_TINTS.length];
+      ctx.fillRect(pts.x[i] * k - 1, pts.y[i] * k - 1, 2, 2);
+    }
+    ctx.restore();
+  }
+
+  // Surfaces told apart by their motion (a floor and a wall…): a faint
+  // dotted hull of each one's corners, its letter and — when a pattern on
+  // it showed — how far it is turned away.
+  function drawSurfaces(surfaces, tracks, k, bounds) {
+    ctx.save();
+    for (const sf of surfaces) {
+      if (sf.hull.length < 3) continue;
+      const pts = sf.hull.map(([x, y]) => [x * k, y * k]);
+      stroke(() => {
+        ctx.beginPath();
+        pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.closePath();
+      }, 'rgba(244,241,234,0.9)', 1, 0.45, [1, 4]);
+      const slants = tracks.filter((t) => t.surface === sf.id && t.plane).map((t) => t.plane.slant).sort((a, b) => a - b);
+      const tilt = slants.length ? ` ∠${Math.round(slants[slants.length >> 1])}°` : '';
+      const top = pts.reduce((a, b) => (b[1] < a[1] ? b : a));
+      tag(`${surfaceName(sf.id)}${tilt}`, top[0] - 4, Math.max(bounds.top + 14, top[1] - 4), '#F4F1EA',
+        { size: 9.5, alpha: 0.8, bg: 0.5 });
+    }
     ctx.restore();
   }
 
@@ -592,10 +621,15 @@ export function createRenderer(canvas) {
       drawMotion(st.motionPoints, k);
     }
 
+    const many = st.surfaces && st.surfaces.length > 1;
+    if (many) drawSurfaces(st.surfaces, st.tracks, k, bounds);
+
     placed = [];
     const order = { cand: 0, fading: 1, active: 2 };
     const tracks = [...st.tracks].sort((a, b) => order[b.state] - order[a.state] || a.cy - b.cy);
-    for (const tr of tracks) drawTrack(tr, S, st.now, bounds);
+    for (const tr of tracks) {
+      drawTrack(tr, S, st.now, bounds, many && tr.surface != null ? ` ／ ${surfaceName(tr.surface)}` : '');
+    }
 
     // reticle
     ctx.strokeStyle = 'rgba(244,241,234,0.55)';
