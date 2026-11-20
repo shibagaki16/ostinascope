@@ -76,6 +76,13 @@ export const DETECTOR_DEFAULTS = Object.freeze({
   grow: true, // regions take in agreeing near-miss neighbours (extent only)
   rings: true,
   ringCells: 7,
+  // rings/rays: how far (≈ sin of the angle) a cell's line may miss the
+  // centre before it is dropped from the fit, and the mean miss allowed
+  ringOutlier: 0.35,
+  ringAim: 0.07,
+  ringEllipse: 0.5, // rings may look this flat (semi-axis ratio) in perspective
+  ringKeep: 0.6, // share of the group that must remain after dropping misses
+  ringSpacing: 0.7, // share of ring cells whose spacing matches the median
   rows: true, // look for rows of similar things too
   // the row search follows the sensitivity only up to here: beyond it,
   // noise textures start to form rows (rowSensitivity overrides)
@@ -591,7 +598,7 @@ export function createDetector(options = {}) {
       regions.push(...buildRegions(lv));
     }
 
-    let kept = dedupe(absorbRims(regions));
+    let kept = dedupe(absorbRings(absorbRims(regions)));
     if (opt.rows) kept = kept.concat(findRows(kept, dims));
     for (const reg of kept) Object.assign(reg, regionColor(rgba, W, H, reg));
     return { W, H, levels, regions: kept, ms: now() - t0 };
@@ -734,6 +741,107 @@ export function createDetector(options = {}) {
     return { x, y, rms: Math.sqrt(res / sw) };
   }
 
+  // Concentric ellipses: rings seen at an angle. The rings are level sets
+  // of (p − c)ᵀ A (p − c), so a cell's stripe normal n is parallel to
+  // A (p − c). With e = A c that is linear in (a, b, d, e) for
+  // A = [[a, b], [b, d]]; the scale is fixed by a + d = 1. Weighted least
+  // squares, in coordinates around the cells' mean for conditioning.
+  function fitEllipse(cs) {
+    let mx = 0, my = 0, sw = 0;
+    for (const c of cs) {
+      mx += c.score * c.cx;
+      my += c.score * c.cy;
+      sw += c.score;
+    }
+    mx /= sw;
+    my /= sw;
+    const M = new Float64Array(16);
+    const v = new Float64Array(4);
+    for (const c of cs) {
+      const t = c.a1 / DEG;
+      const nx = Math.sin(t);
+      const ny = Math.cos(t);
+      const x = c.cx - mx;
+      const y = c.cy - my;
+      const g = [-ny * x - nx * y, nx * x - ny * y, ny, -nx];
+      const rhs = -nx * y;
+      for (let i = 0; i < 4; i++) {
+        v[i] += c.score * g[i] * rhs;
+        for (let j = 0; j < 4; j++) M[i * 4 + j] += c.score * g[i] * g[j];
+      }
+    }
+    const sol = solve4(M, v);
+    if (!sol) return null;
+    const [a, b, ex, ey] = sol;
+    const d = 1 - a;
+    const det = a * d - b * b;
+    if (!(a > 0 && d > 0 && det > 1e-6)) return null;
+    // semi-axis ratio of the rings: √(λmin / λmax) of A
+    const disc = Math.sqrt(((a - d) * (a - d)) / 4 + b * b);
+    if (Math.sqrt((0.5 - disc) / (0.5 + disc)) < opt.ringEllipse) return null;
+    return { x: mx + (d * ex - b * ey) / det, y: my + (a * ey - b * ex) / det, A: [a, b, d] };
+  }
+
+  // 4×4 linear system by Gaussian elimination with partial pivoting.
+  function solve4(M, v) {
+    const m = Array.from({ length: 4 }, (_, i) => [M[i * 4], M[i * 4 + 1], M[i * 4 + 2], M[i * 4 + 3], v[i]]);
+    for (let col = 0; col < 4; col++) {
+      let piv = col;
+      for (let r = col + 1; r < 4; r++) if (Math.abs(m[r][col]) > Math.abs(m[piv][col])) piv = r;
+      if (Math.abs(m[piv][col]) < 1e-9) return null;
+      [m[col], m[piv]] = [m[piv], m[col]];
+      for (let r = 0; r < 4; r++) {
+        if (r === col) continue;
+        const f = m[r][col] / m[col][col];
+        for (let k = col; k < 5; k++) m[r][k] -= f * m[col][k];
+      }
+    }
+    return m.map((row, i) => row[4] / row[i]);
+  }
+
+  // How far a cell's line misses the centre, as an angle (≈ its sine):
+  // rings — the stripe normal against A (p − c), the direction a ring's
+  // normal has there (for circles simply towards the centre); rays — the
+  // stripe itself against the direction to the centre. Close to the centre,
+  // where that angle means little, it is measured against the cell size.
+  // Scale-free, so large rings are judged like small ones.
+  function aimError(c, f, normal, size) {
+    const t = c.a1 / DEG;
+    const vx = normal ? Math.sin(t) : Math.cos(t);
+    const vy = normal ? Math.cos(t) : -Math.sin(t);
+    const ux = c.cx - f.x;
+    const uy = c.cy - f.y;
+    const [a, b, d] = f.A || [0.5, 0, 0.5];
+    const gx = a * ux + b * uy;
+    const gy = b * ux + d * uy;
+    return Math.abs(vx * gy - vy * gx) / Math.max(Math.hypot(gx, gy), 0.5 * size);
+  }
+
+  // Fit a centre (and for rings, the ellipse they make in perspective),
+  // drop the cells that clearly do not aim at it (stripes next to the
+  // rings that the grouping took in), fit again.
+  function ringFit(cs, normal, size) {
+    const fit = (u) => (normal ? fitEllipse(u) || fitCenter(u, true) : fitCenter(u, false));
+    let use = cs;
+    for (let it = 0; it < 4; it++) {
+      const f = fit(use);
+      if (!f) return null;
+      const errs = use.map((c) => aimError(c, f, normal, size));
+      const keep = use.filter((_, i) => errs[i] <= opt.ringOutlier);
+      if (keep.length === use.length || keep.length < opt.ringCells) {
+        let e = 0;
+        let w = 0;
+        use.forEach((c, i) => {
+          e += c.score * errs[i];
+          w += c.score;
+        });
+        return { ...f, err: e / w, cells: use };
+      }
+      use = keep;
+    }
+    return null;
+  }
+
   function summarize(cs, type, lv) {
     let sw = 0, gw = 0, lp = 0, lp2 = 0, ca = 0, sa = 0, ang2 = 0, contrast = 0, score = 0;
     let sharp = 0, sharpW = 0, dotsW = 0, gridW = 0, lprom = 0, iso = 0, rep = 0;
@@ -804,6 +912,78 @@ export function createDetector(options = {}) {
     return reg;
   }
 
+  // Rings or rays among a group of stripe cells: { reg, kept } or null.
+  function ringRegion(cs, lv) {
+    const bins = new Set(cs.map((c) => Math.floor(c.a1 / 20) % 9));
+    if (bins.size < 3) return null;
+    let ca = 0, sa = 0, sw = 0, mx = 0, my = 0;
+    for (const c of cs) {
+      ca += c.score * Math.cos((2 * c.a1) / DEG);
+      sa += c.score * Math.sin((2 * c.a1) / DEG);
+      sw += c.score;
+      mx += c.cx / cs.length;
+      my += c.cy / cs.length;
+    }
+    if (Math.hypot(ca, sa) / sw > 0.85) return null; // orientations too uniform
+    if (cs.filter((c) => !c.weak).length < 2 && cs.length < 7) return null;
+    const fc = ringFit(cs, true, lv.size);
+    const fr = ringFit(cs, false, lv.size);
+    let best = null;
+    let type = null;
+    if (fc && (!fr || fc.err <= fr.err)) {
+      best = fc;
+      type = TYPE.CONCENTRIC;
+    } else if (fr) {
+      best = fr;
+      type = TYPE.RADIAL;
+    }
+    if (!best || best.err > opt.ringAim) return null;
+    const kept = best.cells;
+    if (kept.length < opt.ringKeep * cs.length) return null;
+    // what is left must still fan out (not one straight stripe patch)
+    if (new Set(kept.map((c) => Math.floor(c.a1 / 20) % 9)).size < 3) return null;
+    if (kept.filter((c) => !c.weak).length < 2 && kept.length < 7) return null;
+    let spread = 0;
+    for (const c of kept) spread = Math.max(spread, Math.hypot(c.cx - mx, c.cy - my));
+    if (Math.hypot(best.x - mx, best.y - my) > 2.5 * spread + lv.size) return null;
+    if (type === TYPE.CONCENTRIC) {
+      // rings keep their spacing. Some cells read the curved centre, the
+      // rim or a harmonic instead, so most — not all — must agree.
+      const ps = kept.map((c) => c.p1).sort((a, b) => a - b);
+      const med = ps[ps.length >> 1];
+      if (ps.filter((p) => ratio(p, med) < 1.3).length < opt.ringSpacing * ps.length) return null;
+    }
+    const reg = summarize(kept, type, lv);
+    reg.center = { x: best.x, y: best.y };
+    reg.fit = best.err;
+    return { reg, kept };
+  }
+
+  // The group minus its straight stripe patches: firm cells that agree
+  // closely (strictCompat), at least 4 of them, all one way.
+  function withoutStraight(cs, lv) {
+    const at = new Map(cs.map((c) => [c.row * lv.cols + c.col, c]));
+    const seen = new Set();
+    const drop = new Set();
+    for (const c of cs) {
+      if (c.weak || seen.has(c)) continue;
+      const patch = [c];
+      seen.add(c);
+      for (let q = 0; q < patch.length; q++) {
+        const cur = patch[q];
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const n = at.get((cur.row + dy) * lv.cols + cur.col + dx);
+          if (!n || n.weak || seen.has(n) || cur.col + dx < 0 || cur.col + dx >= lv.cols) continue;
+          if (ratio(n.p1, c.p1) >= 1.2 || angleDiff(n.a1, c.a1) >= 10) continue;
+          seen.add(n);
+          patch.push(n);
+        }
+      }
+      if (patch.length >= 4) for (const p of patch) drop.add(p);
+    }
+    return cs.filter((c) => !drop.has(c));
+  }
+
   function buildRegions(lv) {
     const { cols, cells } = lv;
     const used = new Uint8Array(cells.length);
@@ -814,45 +994,16 @@ export function createDetector(options = {}) {
       for (const g of groups) {
         if (g.length < opt.ringCells) continue;
         const cs = g.map((i) => cells[i]);
-        const bins = new Set(cs.map((c) => Math.floor(c.a1 / 20) % 9));
-        if (bins.size < 3) continue;
-        let ca = 0, sa = 0, sw = 0, mx = 0, my = 0;
-        for (const c of cs) {
-          ca += c.score * Math.cos((2 * c.a1) / DEG);
-          sa += c.score * Math.sin((2 * c.a1) / DEG);
-          sw += c.score;
-          mx += c.cx / cs.length;
-          my += c.cy / cs.length;
+        // A straight stripe field touching the rings joins the group and
+        // pulls the fit away: if the whole group fails, try without it.
+        let ring = ringRegion(cs, lv);
+        if (!ring) {
+          const rest = withoutStraight(cs, lv);
+          if (rest.length < cs.length && rest.length >= opt.ringCells) ring = ringRegion(rest, lv);
         }
-        if (Math.hypot(ca, sa) / sw > 0.85) continue; // orientations too uniform
-        if (cs.filter((c) => !c.weak).length < 2 && cs.length < 7) continue;
-        const fc = fitCenter(cs, true);
-        const fr = fitCenter(cs, false);
-        let best = null;
-        let type = null;
-        if (fc && (!fr || fc.rms <= fr.rms)) {
-          best = fc;
-          type = TYPE.CONCENTRIC;
-        } else if (fr) {
-          best = fr;
-          type = TYPE.RADIAL;
-        }
-        if (!best || best.rms > 0.28 * lv.size) continue;
-        let spread = 0;
-        for (const c of cs) spread = Math.max(spread, Math.hypot(c.cx - mx, c.cy - my));
-        if (Math.hypot(best.x - mx, best.y - my) > 2.5 * spread + lv.size) continue;
-        if (type === TYPE.CONCENTRIC) {
-          // rings keep their spacing; a few odd cells (the curved centre,
-          // the rim) may not, so compare the 10th and 90th percentiles
-          const ps = cs.map((c) => c.p1).sort((a, b) => a - b);
-          const q = (f) => ps[Math.min(ps.length - 1, Math.floor(f * ps.length))];
-          if (q(0.9) / q(0.1) > 1.7) continue;
-        }
-        const reg = summarize(cs, type, lv);
-        reg.center = { x: best.x, y: best.y };
-        reg.fit = best.rms / lv.size;
-        out.push(reg);
-        for (const i of g) used[i] = 1;
+        if (!ring) continue;
+        out.push(ring.reg);
+        for (const c of ring.kept) used[c.row * cols + c.col] = 1;
       }
     }
 
@@ -1040,6 +1191,32 @@ export function createDetector(options = {}) {
       drop.add(i);
     });
     return regions.filter((_, i) => !drop.has(i));
+  }
+
+  // A ring or ray figure also leaves stripe regions on itself (a stretch of
+  // rings far from the centre is nearly straight, or a level saw only part
+  // of it). A stripe region mostly inside a ring/ray region whose lines run
+  // the way that figure's would at that spot is part of it.
+  function absorbRings(regions) {
+    const hosts = regions.filter((r) => r.family === 'radial' && r.center);
+    if (!hosts.length) return regions;
+    return regions.filter((S) => {
+      if (S.type !== TYPE.STRIPE) return true;
+      return !hosts.some((H) => {
+        const ix = Math.max(0, Math.min(H.x + H.w, S.x + S.w) - Math.max(H.x, S.x));
+        const iy = Math.max(0, Math.min(H.y + H.h, S.y + S.h) - Math.max(H.y, S.y));
+        if ((ix * iy) / (S.w * S.h) < 0.5) return false;
+        if (H.type === TYPE.CONCENTRIC && ratio(S.period, H.period) > 1.5) return false;
+        const t = S.angle / DEG;
+        const normal = H.type === TYPE.CONCENTRIC;
+        const vx = normal ? Math.sin(t) : Math.cos(t);
+        const vy = normal ? Math.cos(t) : -Math.sin(t);
+        const dx = H.center.x - S.cx;
+        const dy = H.center.y - S.cy;
+        const d = Math.hypot(dx, dy);
+        return d < 0.5 * S.cellSize || Math.abs(vx * dy - vy * dx) / d <= opt.ringOutlier;
+      });
+    });
   }
 
   // The same pattern can show up at both levels near the hand-over period.

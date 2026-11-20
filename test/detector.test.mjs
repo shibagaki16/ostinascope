@@ -93,6 +93,23 @@ test('concentric rings → CONCENTRIC near the true centre', () => {
   assert.ok(Math.hypot(r.center.x - 96, r.center.y - 210) < 20, `centre ${JSON.stringify(r.center)}`);
 });
 
+// rings seen at an angle are ellipses; a stripe field next to them joins
+// the stripe cells' group and must not pull the centre away
+for (const [p, k] of [[7, 0.65], [6, 0.8], [9, 0.6], [8, 1]]) {
+  test(`rings in perspective (axis ratio ${k}, p=${p}) beside a stripe field → CONCENTRIC`, () => {
+    const ell = (x, y) => {
+      const r = Math.hypot(x - 96, (y - 180) / k);
+      return r < 88 && Math.floor(r / p) % 2 === 0;
+    };
+    const field = (x, y) => y > 300 && y < 400 && Math.floor((x + y * 0.3) / 6) % 2 === 0;
+    const res = run((x, y) => ell(x, y) || field(x, y));
+    const r = biggest(res, TYPE.CONCENTRIC);
+    assert.ok(r, describe(res));
+    assert.ok(Math.hypot(r.center.x - 96, r.center.y - 180) < 12, `centre ${JSON.stringify(r.center)}`);
+    assert.ok(res.regions.some((q) => q.type === TYPE.STRIPE && q.cy > 300), 'the stripe field stays a STRIPE');
+  });
+}
+
 test('radial rays → RADIAL', () => {
   const res = run(S.rays(96, 210, 64));
   const r = biggest(res, TYPE.RADIAL);
