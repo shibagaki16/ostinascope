@@ -31,9 +31,25 @@ export async function openCamera(video) {
   video.muted = true;
   video.srcObject = stream;
   await video.play();
+  const track = stream.getVideoTracks()[0];
+  let lastPlay = 0;
   return {
     kind: 'camera',
-    ready: () => video.readyState >= 2 && video.videoWidth > 0,
+    // A paused video still reports a frame: analysing it would keep the
+    // last view's loops playing. iOS pauses the video when the page goes
+    // to the background and does not always resume it.
+    ready: () => video.readyState >= 2 && video.videoWidth > 0 && !video.paused && !video.ended &&
+      track.readyState === 'live',
+    /** the camera was taken away (another app, permissions): open it again */
+    get ended() {
+      return track.readyState === 'ended';
+    },
+    /** restart a paused video (at most once a second) */
+    resume(now = performance.now()) {
+      if (!video.paused || now - lastPlay < 1000) return;
+      lastPlay = now;
+      video.play().catch(() => {});
+    },
     /** short side of the visible crop, in source pixels */
     cropShort(aspect) {
       const c = coverCrop(video.videoWidth, video.videoHeight, aspect);

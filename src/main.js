@@ -232,7 +232,12 @@ function loop(ts) {
   const [vw, vh] = viewSize();
   if (vw !== state.W || vh !== state.H) layout(); // rotation, URL bar, etc.
   const src = state.source;
-  if (!src || !src.ready()) return;
+  if (!src) return;
+  if (!src.ready()) {
+    stalled(src, ts);
+    return;
+  }
+  stall = 0;
   if (src.step) src.step(dt, ts);
 
   if (ts - lastAnalysis >= 1000 / ANALYSIS_HZ - 4 && analyze(ts)) lastAnalysis = ts;
@@ -258,6 +263,40 @@ function loop(ts) {
   }
 
   renderer.draw(state);
+}
+
+// The camera stopped delivering frames (page was in the background, the
+// camera went to another app). The last view must not keep sounding:
+// after a moment, let everything go; meanwhile try to get the camera back.
+let stall = 0;
+let reopening = false;
+let reopenAt = 0;
+function stalled(src, ts) {
+  if (!stall) stall = ts;
+  if (src.kind !== 'camera' || document.hidden) return;
+  if (ts - stall > 400 && state.tracks.length) {
+    tracker.reset();
+    state.tracks = [];
+    state.trackById = new Map();
+    state.followers = new Map();
+    for (const id of audio.voices.keys()) audio.fadeOut(id, 0.5);
+  }
+  if (src.ended) {
+    if (reopening || ts - reopenAt < 3000) return;
+    reopening = true;
+    reopenAt = ts;
+    src.stop();
+    openCamera($('#video'))
+      .then((cam) => {
+        if (state.camera === src) state.camera = cam;
+        if (state.source === src) state.source = cam;
+        else cam.stop();
+      })
+      .catch((err) => console.warn('camera reopen failed', err))
+      .finally(() => {
+        reopening = false;
+      });
+  } else src.resume(ts);
 }
 
 // ---------------------------------------------------------------------------
