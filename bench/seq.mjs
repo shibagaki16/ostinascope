@@ -33,7 +33,8 @@ for (const [, fr] of seqs) {
     frames++;
     const n = (x) => x / unit;
     const dets = res.regions.map((r) => ({ ...r, cx: n(r.cx), cy: n(r.cy), w: n(r.w), h: n(r.h), period: n(r.period),
-      period2: r.period2 ? n(r.period2) : undefined, center: r.center ? { x: n(r.center.x), y: n(r.center.y) } : null }));
+      period2: r.period2 ? n(r.period2) : undefined, center: r.center ? { x: n(r.center.x), y: n(r.center.y) } : null,
+      quad: r.quad ? r.quad.map(([x, y]) => [n(x), n(y)]) : undefined }));
     tracker.update(dets, f * 100, view, () => 1200);
     for (const tr of tracker.tracks) {
       if (tr.state !== 'active') continue;
