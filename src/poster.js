@@ -214,14 +214,16 @@ const PATTERNS = {
       }
     },
   },
-  // n alternating wedges (n/2 dark ones)
+  // n alternating wedges (n/2 dark ones); `duty` is the dark share of each
+  // pair (0.5 = equal wedges, small = thin spokes)
   rays: {
     draw(g, p, E, color, R) {
       g.fillStyle = color(p.color);
+      const w = 2 * (p.duty ?? 0.5);
       for (let k = 0; k < p.n; k += 2) {
         g.beginPath();
         g.moveTo(0, 0);
-        g.arc(0, 0, R + 10, (k / p.n) * Math.PI * 2, ((k + 1) / p.n) * Math.PI * 2);
+        g.arc(0, 0, R + 10, (k / p.n) * Math.PI * 2, ((k + w) / p.n) * Math.PI * 2);
         g.closePath();
         g.fill();
       }
@@ -349,7 +351,7 @@ const PATTERN_FIELDS = [
   { ...F.color('pattern.color', '模様の色'), when: patIs('stripes', 'grid', 'hexdots', 'rings', 'rays') },
   { ...F.num('pattern.period', '間隔'), when: patIs('stripes') },
   { ...F.num('pattern.angle', '線の向き°'), when: patIs('stripes') },
-  { ...F.num('pattern.duty', '線の太さ比', 0.01, 0.02, 0.98), when: patIs('stripes') },
+  { ...F.num('pattern.duty', '線の太さ比', 0.01, 0.02, 0.98), when: patIs('stripes', 'rays') },
   { ...F.num('pattern.phase', '位相'), when: patIs('stripes') },
   { ...F.num('pattern.px', '横の間隔'), when: patIs('grid') },
   { ...F.num('pattern.py', '縦の間隔'), when: patIs('grid') },
@@ -372,7 +374,7 @@ export const PATTERN_DEFAULTS = {
   grid: { kind: 'grid', px: 36, py: 48, lineWidth: 6, phase: [0, 0], color: 'ink' },
   hexdots: { kind: 'hexdots', a: 30, r: 7.5, phase: [0, 0], color: 'ink' },
   rings: { kind: 'rings', r0: 14, dr: 20, lineWidth: 9, color: 'ink' },
-  rays: { kind: 'rays', n: 96, color: 'ink' },
+  rays: { kind: 'rays', n: 96, duty: 0.5, color: 'ink' },
 };
 export const SHAPE_DEFAULTS = {
   circle: { kind: 'circle', r: 200 },
