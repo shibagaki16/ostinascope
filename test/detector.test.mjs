@@ -325,3 +325,11 @@ test('analysis is fast enough for ~10 Hz', () => {
   // a worst case (every cell full of pattern) on a desktop CPU
   assert.ok(ms < 80, `${ms.toFixed(1)} ms per frame`);
 });
+
+test('a row touching the frame edge still has a finite contrast', () => {
+  // bottles whose tops are cut off by the top edge
+  const bottle = (cx) => (x, y) => Math.abs(x - cx) < 9 && y < 40;
+  const f = (x, y) => [30, 70, 110, 150].some((cx) => bottle(cx)(x, y));
+  const res = run(f);
+  for (const r of res.regions) assert.ok(Number.isFinite(r.contrast), `${r.type} contrast ${r.contrast}`);
+});

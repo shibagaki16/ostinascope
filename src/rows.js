@@ -470,14 +470,16 @@ export function createRowFinder(options = {}) {
       x1 = Math.max(x1, m.x + m.w);
       y1 = Math.max(y1, m.y + m.h);
     }
-    // contrast from the grey values under the members (level image)
+    // contrast from the grey values under the members (level image; a
+    // member at the frame's edge may stick out of it)
+    const ih = Math.floor(img.length / iw);
     let s = 0, s2 = 0, n = 0;
     for (const m of r.members) {
       const mx0 = Math.floor(m.x / scale);
       const my0 = Math.floor(m.y / scale);
       const mw = Math.floor(m.w / scale);
-      for (let y = my0; y < my0 + mw; y += 2) {
-        for (let x = mx0; x < mx0 + mw; x += 2) {
+      for (let y = Math.max(0, my0); y < Math.min(ih, my0 + mw); y += 2) {
+        for (let x = Math.max(0, mx0); x < Math.min(iw, mx0 + mw); x += 2) {
           const v = img[y * iw + x];
           s += v;
           s2 += v * v;
