@@ -60,7 +60,7 @@ if (scenes.length) {
       }
     }
   }
-  const tot = Object.entries(rec).filter(([k]) => k !== 'row').reduce((a, [, r]) => [a[0] + r[0], a[2] + r[2]], [0, 0]);
+  const tot = Object.entries(rec).filter(([k]) => k !== 'row').reduce((a, [, r]) => [a[0] + r[0], a[1] + r[2]], [0, 0]);
   console.log(`patterns (not rows): right family ${tot[0]}/${tot[1]} (${(100 * tot[0] / Math.max(1, tot[1])).toFixed(0)}%)`);
   if (rec.row) console.log(`rows: found ${rec.row[0]}/${rec.row[2]} (${(100 * rec.row[0] / rec.row[2]).toFixed(0)}%), count ±1 ${countOk}/${rowsFound}`);
   console.log(`regions off every pattern: ${extra}/${regs} (${(extra / scenes.length).toFixed(2)} per view, ROW ${(extraRows / scenes.length).toFixed(2)})`);
