@@ -1,0 +1,433 @@
+// Does the overlay stay on the surface? A virtual phone camera moves over
+// the demo poster and some photos in 3-D (tilting, panning, zooming, hand
+// shake), with the true plane-to-image homography known for every frame.
+// The real detector, tracker and motion estimator run on the frames as the
+// app runs them (camera frames at 30 Hz, analysis at 10 Hz, results back
+// two frames late), once without and once with camera motion.
+//
+// Measured over the playing (active) tracks:
+//   slip   how far an overlay moves relative to the surface under it,
+//          px per frame (192 px wide frame). 0 = glued to the surface.
+//   IoU    overlap with the poster figure it sits on (visible part)
+//   held   share of frames in which a fully visible figure is playing
+//   ids    distinct playing tracks per figure (1 = never lost its identity)
+//
+// Runs in a browser (the poster is drawn with canvas): open
+// bench/follow.html, or `node bench/page.mjs <url of follow.html>`.
+
+import { drawPoster, loadPoster, boundsOf, context } from '../src/poster.js';
+import { createDetector, familyOf } from '../src/detector.js';
+import { createTracker, warpRegion } from '../src/tracker.js';
+import { createMotion, greyOf } from '../src/motion.js';
+import { applyH, invH, mulH, scaleH } from '../src/homography.js';
+
+const AW = 192;
+const AH = 416;
+const FOCAL = 206; // px: ≈ 50° across the short side
+const FPS = 30;
+const ANALYSIS_EVERY = 3; // 10 Hz
+const LATENCY = 2; // frames until a result is back
+
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ---------------------------------------------------------------- sources
+
+function mipmaps(img) {
+  const levels = [{ w: img.width, h: img.height, d: Float32Array.from(img.data) }];
+  while (levels.length < 8) {
+    const a = levels[levels.length - 1];
+    const w = a.w >> 1;
+    const h = a.h >> 1;
+    if (w < 8 || h < 8) break;
+    const d = new Float32Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        for (let c = 0; c < 4; c++) {
+          const i = (2 * y * a.w + 2 * x) * 4 + c;
+          d[(y * w + x) * 4 + c] = 0.25 * (a.d[i] + a.d[i + 4] + a.d[i + a.w * 4] + a.d[i + a.w * 4 + 4]);
+        }
+      }
+    }
+    levels.push({ w, h, d });
+  }
+  return levels;
+}
+
+async function posterSource() {
+  const spec = await loadPoster();
+  await document.fonts.ready;
+  const cv = drawPoster(spec, 1);
+  const g = cv.getContext('2d');
+  const ctx = context(spec);
+  const figs = [];
+  for (const el of spec.elements) {
+    if (!/^fig\d+$/.test(el.id) || el.type === 'text') continue;
+    const kind = el.type === 'row' ? 'row' : el.type === 'repeat' ? el.child.pattern.kind : el.pattern.kind;
+    const family = { stripes: 'line', grid: 'lattice', hexdots: 'lattice', rings: 'radial', rays: 'radial', row: 'row' }[kind];
+    if (!family) continue;
+    const b = boundsOf(el, g, ctx);
+    figs.push({ id: el.id, family, poly: [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]] });
+  }
+  return { name: 'poster', mip: mipmaps(g.getImageData(0, 0, cv.width, cv.height)), w: cv.width, h: cv.height, figs };
+}
+
+async function photoSource(url) {
+  const im = new Image();
+  im.src = url;
+  await im.decode();
+  const k = Math.min(1, 1600 / Math.max(im.width, im.height));
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(im.width * k);
+  cv.height = Math.round(im.height * k);
+  const g = cv.getContext('2d');
+  g.drawImage(im, 0, 0, cv.width, cv.height);
+  return { name: url.split('/').pop(), mip: mipmaps(g.getImageData(0, 0, cv.width, cv.height)), w: cv.width, h: cv.height, figs: [] };
+}
+
+// ---------------------------------------------------------------- camera
+
+const norm = (v) => {
+  const l = Math.hypot(...v);
+  return v.map((c) => c / l);
+};
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const rotAxis = (v, axis, ang) => {
+  // Rodrigues
+  const [x, y, z] = axis;
+  const c = Math.cos(ang);
+  const s = Math.sin(ang);
+  const d = (x * v[0] + y * v[1] + z * v[2]) * (1 - c);
+  const cr = cross(axis, v);
+  return [v[0] * c + cr[0] * s + x * d, v[1] * c + cr[1] * s + y * d, v[2] * c + cr[2] * s + z * d];
+};
+
+// A hand-held path over the plane: the point looked at wanders, the phone
+// tilts, rolls, comes closer and backs off, and shakes a little.
+function cameraPath(src, seed, frames) {
+  const r = rng(seed);
+  const u = (a, b) => a + (b - a) * r();
+  const W = src.w;
+  const Hh = src.h;
+  const foot0 = u(0.2, 0.45) * Math.min(W, Hh); // plane px across the short side
+  const D0 = (foot0 * FOCAL) / AW;
+  const cx0 = u(0.25, 0.75) * W;
+  const cy0 = u(0.25, 0.75) * Hh;
+  const speed = u(0.15, 0.6); // footprints per second (rough)
+  const waves = Array.from({ length: 3 }, () => ({ w: u(0.2, 0.9), px: u(0, 6.3), py: u(0, 6.3) }));
+  const tilt0 = u(0, 40) / 57.3;
+  const az0 = u(0, 6.3);
+  const roll0 = u(-12, 12) / 57.3;
+  let jx = 0;
+  let jy = 0;
+  const shake = u(0.1, 0.5) / 57.3; // rad
+  const out = [];
+  for (let f = 0; f < frames; f++) {
+    const t = f / FPS;
+    let ox = 0;
+    let oy = 0;
+    for (const wv of waves) {
+      ox += Math.sin(wv.w * t * 2 * Math.PI * 0.35 + wv.px) / waves.length;
+      oy += Math.sin(wv.w * t * 2 * Math.PI * 0.3 + wv.py) / waves.length;
+    }
+    const amp = (speed * foot0) / (2 * Math.PI * 0.3);
+    const T = [Math.min(W, Math.max(0, cx0 + ox * amp * 2)), Math.min(Hh, Math.max(0, cy0 + oy * amp * 2)), 0];
+    const tilt = Math.max(0, tilt0 + (8 / 57.3) * Math.sin(0.7 * t + az0));
+    const D = D0 * (1 + 0.2 * Math.sin(0.5 * t + roll0 * 10));
+    const v = [Math.sin(tilt) * Math.cos(az0), Math.sin(tilt) * Math.sin(az0), -Math.cos(tilt)];
+    const C = [T[0] + D * v[0], T[1] + D * v[1], T[2] + D * v[2]];
+    let z = norm([T[0] - C[0], T[1] - C[1], T[2] - C[2]]);
+    let x = norm(cross([0, 1, 0], z));
+    // hand shake: a smoothed random turn of the phone
+    jx = 0.85 * jx + 0.15 * (r() * 2 - 1) * shake * 3;
+    jy = 0.85 * jy + 0.15 * (r() * 2 - 1) * shake * 3;
+    let y = cross(z, x);
+    z = norm(rotAxis(rotAxis(z, y, jx), x, jy));
+    x = norm(cross(y, z));
+    const roll = roll0 + (3 / 57.3) * Math.sin(0.9 * t);
+    x = rotAxis(x, z, roll);
+    y = cross(z, x);
+    // plane (X, Y, 0) → image: K [r1 r2 t]
+    const Rm = [x, y, z];
+    const tt = Rm.map((row) => -(row[0] * C[0] + row[1] * C[1] + row[2] * C[2]));
+    const P = [
+      [Rm[0][0], Rm[0][1], tt[0]],
+      [Rm[1][0], Rm[1][1], tt[1]],
+      [Rm[2][0], Rm[2][1], tt[2]],
+    ];
+    const K = [FOCAL, 0, AW / 2, 0, FOCAL, AH / 2, 0, 0, 1];
+    out.push(mulH(K, P.flat()));
+  }
+  return out;
+}
+
+// Render the plane through H (plane → image) with mip-mapped bilinear
+// sampling, a touch of blur and sensor noise.
+function renderFrame(src, H, noise) {
+  const inv = invH(H);
+  const rgba = new Uint8ClampedArray(AW * AH * 4);
+  const { mip } = src;
+  for (let y = 0; y < AH; y++) {
+    for (let x = 0; x < AW; x++) {
+      const [X, Y] = applyH(inv, x + 0.5, y + 0.5);
+      const j = (y * AW + x) * 4;
+      if (!(X >= 0 && Y >= 0 && X < src.w - 1 && Y < src.h - 1)) {
+        rgba[j] = rgba[j + 1] = rgba[j + 2] = 52;
+        rgba[j + 3] = 255;
+        continue;
+      }
+      // footprint of the pixel on the plane → mip level (+0.6: lens softness)
+      const [X1, Y1] = applyH(inv, x + 1.5, y + 0.5);
+      const s = Math.hypot(X1 - X, Y1 - Y);
+      const L = Math.max(0, Math.min(mip.length - 1, Math.round(Math.log2(Math.max(1, s)) + 0.6)));
+      const m = mip[L];
+      const k = 1 / (1 << L);
+      const u = Math.min(m.w - 1.001, X * k);
+      const v = Math.min(m.h - 1.001, Y * k);
+      const x0 = u | 0;
+      const y0 = v | 0;
+      const fx = u - x0;
+      const fy = v - y0;
+      const i = (y0 * m.w + x0) * 4;
+      const n = noise();
+      for (let c = 0; c < 3; c++) {
+        const a = m.d[i + c] + (m.d[i + 4 + c] - m.d[i + c]) * fx;
+        const b = m.d[i + m.w * 4 + c] + (m.d[i + m.w * 4 + 4 + c] - m.d[i + m.w * 4 + c]) * fx;
+        rgba[j + c] = a + (b - a) * fy + n;
+      }
+      rgba[j + 3] = 255;
+    }
+  }
+  return rgba;
+}
+
+// ---------------------------------------------------------------- geometry
+
+function area(poly) {
+  let a = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const [x0, y0] = poly[i];
+    const [x1, y1] = poly[(i + 1) % poly.length];
+    a += x0 * y1 - x1 * y0;
+  }
+  return Math.abs(a) / 2;
+}
+// Sutherland–Hodgman: subject clipped by a convex polygon
+function clip(subject, by) {
+  let out = subject;
+  const orient = Math.sign(by.reduce((s, p, i) => {
+    const q = by[(i + 1) % by.length];
+    return s + p[0] * q[1] - q[0] * p[1];
+  }, 0)) || 1;
+  for (let i = 0; i < by.length && out.length; i++) {
+    const a = by[i];
+    const b = by[(i + 1) % by.length];
+    const side = (p) => orient * ((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]));
+    const inp = out;
+    out = [];
+    for (let j = 0; j < inp.length; j++) {
+      const p = inp[j];
+      const q = inp[(j + 1) % inp.length];
+      const sp = side(p);
+      const sq = side(q);
+      if (sp >= 0) out.push(p);
+      if ((sp >= 0) !== (sq >= 0)) {
+        const t = sp / (sp - sq);
+        out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+      }
+    }
+  }
+  return out;
+}
+const VIEW = [[0, 0], [AW, 0], [AW, AH], [0, AH]];
+function iou(a, b) {
+  const i = area(clip(a, b));
+  return i / Math.max(1e-9, area(a) + area(b) - i);
+}
+
+// ---------------------------------------------------------------- run
+
+const fam = (t) => familyOf(t);
+
+function makeVariant(useMotion, trackerOpt) {
+  return {
+    useMotion,
+    tracker: createTracker(trackerOpt),
+    motion: useMotion ? createMotion() : null,
+    pending: [], // [applyAtFrame, result, captureFrame, motionIndex]
+    last: new Map(), // track id → quad (px) in the previous frame
+    slip: [],
+    slipFast: [],
+    slipDet: [], // frames in which a detection was taken in
+    iou: [],
+    held: 0,
+    visible: 0,
+    figIds: new Map(),
+  };
+}
+
+async function runSequence(src, seed, frames, out, trackerOpt) {
+  const Hs = cameraPath(src, seed, frames);
+  const det = createDetector({ rowSplit: 2 });
+  const nz = rng(seed + 99);
+  const noise = () => (nz() + nz() - 1) * 4;
+  const variants = [makeVariant(false), makeVariant(true, trackerOpt)];
+  const unit = Math.min(AW, AH);
+  const view = { w: AW / unit, h: AH / unit };
+  const toV = (r) => ({
+    ...r, cx: r.cx / unit, cy: r.cy / unit, w: r.w / unit, h: r.h / unit, period: r.period / unit,
+    period2: r.period2 ? r.period2 / unit : undefined,
+    center: r.center ? { x: r.center.x / unit, y: r.center.y / unit } : null,
+    size: r.size ? r.size / unit : undefined,
+    members: r.members ? r.members.map((m) => ({ ...m, x: m.x / unit, y: m.y / unit, w: m.w / unit, h: m.h / unit, t: m.t / unit })) : undefined,
+  });
+  let analysis = null;
+  for (let f = 0; f < frames; f++) {
+    const t = (f * 1000) / FPS;
+    const rgba = renderFrame(src, Hs[f], noise);
+    const grey = greyOf(rgba, AW, AH);
+    if (f % ANALYSIS_EVERY === 0) analysis = { at: f + LATENCY, res: det.analyze(rgba, AW, AH), frame: f };
+    const figsNow = src.figs.map((g) => ({ ...g, img: g.poly.map(([x, y]) => applyH(Hs[f], x, y)) }));
+    const trueStep = f ? mulH(Hs[f], invH(Hs[f - 1])) : null;
+    for (const V of variants) {
+      let k = -1;
+      if (V.motion) {
+        const m = V.motion.push(grey, AW, AH);
+        k = m.k;
+        if (m.H) V.tracker.warp(scaleH(m.H, 1 / unit), t);
+      }
+      if (analysis && analysis.frame === f) V.pending.push({ ...analysis, k });
+      let updated = false;
+      while (V.pending.length && V.pending[0].at <= f) {
+        const p = V.pending.shift();
+        updated = true;
+        let dets = p.res.regions.map(toV);
+        if (V.motion) {
+          const C = V.motion.chain(p.k);
+          if (C) {
+            const Cv = scaleH(C, 1 / unit);
+            dets = dets.map((d) => warpRegion(d, Cv));
+          }
+          V.tracker.update(dets, t, view, () => 1500);
+        } else {
+          // as the app did: stamped with the capture time
+          V.tracker.update(dets, (p.frame * 1000) / FPS, view, () => 1500);
+        }
+      }
+      // --- measure
+      const now = new Map();
+      for (const tr of V.tracker.tracks) {
+        if (tr.state !== 'active') continue;
+        const q = tr.quad.map(([x, y]) => [x * unit, y * unit]);
+        now.set(tr.id, q);
+        const before = V.last.get(tr.id);
+        if (before && trueStep) {
+          const moved = before.map(([x, y]) => applyH(trueStep, x, y));
+          const s = moved.reduce((acc, p, i) => acc + Math.hypot(p[0] - q[i][0], p[1] - q[i][1]), 0) / 4;
+          V.slip.push(s);
+          if (updated) V.slipDet.push(s);
+          const [ax, ay] = applyH(trueStep, AW / 2, AH / 2);
+          if (Math.hypot(ax - AW / 2, ay - AH / 2) > 3) V.slipFast.push(s);
+        }
+        if (figsNow.length) {
+          let best = 0;
+          let bestFig = null;
+          for (const g of figsNow) {
+            const vis = clip(g.img, VIEW);
+            if (vis.length < 3) continue;
+            const o = iou(q, vis);
+            if (o > best) {
+              best = o;
+              bestFig = g;
+            }
+          }
+          V.iou.push(best);
+          if (bestFig && best > 0.2) {
+            if (!V.figIds.has(bestFig.id)) V.figIds.set(bestFig.id, new Set());
+            V.figIds.get(bestFig.id).add(tr.id);
+          }
+        }
+      }
+      V.last = now;
+      // held: fully visible figures with a playing track of the right family on them
+      for (const g of figsNow) {
+        if (area(clip(g.img, VIEW)) < 0.95 * area(g.img)) continue;
+        V.visible++;
+        const on = V.tracker.tracks.some((tr) => tr.state === 'active' && fam(tr.type) === g.family &&
+          iou(tr.quad.map(([x, y]) => [x * unit, y * unit]), g.img) > 0.15);
+        if (on) V.held++;
+      }
+    }
+  }
+  for (const [i, V] of variants.entries()) {
+    const o = out[i];
+    o.slip.push(...V.slip);
+    o.slipFast.push(...V.slipFast);
+    o.slipDet.push(...V.slipDet);
+    o.iou.push(...V.iou);
+    o.held += V.held;
+    o.visible += V.visible;
+    for (const s of V.figIds.values()) o.ids.push(s.size);
+  }
+}
+
+/** A strip of frames from one sequence (for looking at), as a canvas. */
+export async function strip({ seed = 1000, frames = 150, every = 15, photo = null } = {}) {
+  const src = photo ? await photoSource(photo) : await posterSource();
+  const Hs = cameraPath(src, seed + src.name.length, frames);
+  const nz = rng(seed + 99);
+  const noise = () => (nz() + nz() - 1) * 4;
+  const picks = [];
+  for (let f = 0; f < frames; f += every) picks.push(f);
+  const cv = document.createElement('canvas');
+  cv.width = picks.length * (AW + 4);
+  cv.height = AH;
+  const g = cv.getContext('2d');
+  picks.forEach((f, i) => g.putImageData(new ImageData(renderFrame(src, Hs[f], noise), AW, AH), i * (AW + 4), 0));
+  return cv;
+}
+
+const pct = (a, p) => {
+  if (!a.length) return NaN;
+  const s = [...a].sort((x, y) => x - y);
+  return s[Math.min(s.length - 1, Math.floor(p * s.length))];
+};
+const mean = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : NaN);
+
+export async function run({ seqs = 6, frames = 150, photos = [], tracker = {}, log = () => {} } = {}) {
+  const sources = [await posterSource()];
+  for (const p of photos) sources.push(await photoSource(p));
+  const report = [];
+  for (const src of sources) {
+    const out = [0, 1].map(() => ({ slip: [], slipFast: [], slipDet: [], iou: [], held: 0, visible: 0, ids: [] }));
+    const n = src.name === 'poster' ? seqs : Math.max(1, seqs >> 1);
+    for (let s = 0; s < n; s++) {
+      await runSequence(src, 1000 + s * 17 + src.name.length, frames, out, tracker);
+      log(`${src.name} ${s + 1}/${n}`);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    for (const [i, o] of out.entries()) {
+      report.push({
+        source: src.name,
+        motion: i === 1,
+        slip: +mean(o.slip).toFixed(2),
+        slipP90: +pct(o.slip, 0.9).toFixed(2),
+        slipFast: +mean(o.slipFast).toFixed(2),
+        slipDet: +mean(o.slipDet).toFixed(2),
+        iou: src.figs.length ? +mean(o.iou).toFixed(3) : null,
+        held: o.visible ? +(o.held / o.visible).toFixed(3) : null,
+        idsPerFigure: o.ids.length ? +mean(o.ids).toFixed(2) : null,
+        trackFrames: o.slip.length,
+      });
+    }
+  }
+  return report;
+}

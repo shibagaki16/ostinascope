@@ -1,8 +1,11 @@
 // Ostinascope — app wiring: source → analysis (≈10 Hz) → tracks → voices,
-// and the overlay at display rate.
+// and the overlay at display rate. Between analyses the camera motion
+// (≈30 Hz) keeps every track on the surface it was found on.
 
 import { createAnalyzer } from './analysis.js';
-import { createTracker } from './tracker.js';
+import { createTracker, warpRegion } from './tracker.js';
+import { createMotion, greyOf } from './motion.js';
+import { scaleH } from './homography.js';
 import { AudioEngine } from './audio.js';
 import { specFor, levelFor, panFor, fadeBarsFor } from './mapping.js';
 import { createRenderer } from './render.js';
@@ -14,9 +17,11 @@ const params = new URLSearchParams(location.search);
 
 const UNIT = 192; // analysis resolution, short side (px)
 const ANALYSIS_HZ = 10;
+const MOTION_MS = 30; // camera motion: every new camera frame (≈30 Hz)
 
 const analyzer = createAnalyzer();
 const tracker = createTracker();
+const motion = createMotion();
 const audio = new AudioEngine();
 const viewEl = $('#view');
 const renderer = createRenderer(viewEl);
@@ -28,6 +33,8 @@ const state = {
   demo: null,
   running: false,
   debug: params.has('debug'),
+  follow: !params.has('nofollow'), // move tracks with the camera motion
+  motionOk: false,
   maxVoices: 6,
   insets: { top: 0, bottom: 0 },
   tracks: [],
@@ -79,6 +86,7 @@ function layout() {
   if (aspectChanged) {
     // coordinates changed under the tracks; start over
     tracker.reset();
+    motion.reset();
     for (const id of audio.voices.keys()) audio.fadeOut(id, 1);
   }
 }
@@ -139,19 +147,50 @@ function normalise(r, unit) {
   };
 }
 
-// Grab a frame and hand it to the analyser (a worker when possible). The
-// result comes back a little later and is stamped with the capture time.
-function analyze(now) {
+// One camera frame: how did the camera move since the last one? Every
+// track moves with it, so outlines stay on their surface between analyses.
+// Returns the frame's motion index (-1 when not following).
+function follow(img, now) {
+  if (!state.follow) return -1;
+  const t0 = performance.now();
+  grey = greyOf(img.data, img.width, img.height, grey);
+  const m = motion.push(grey, img.width, img.height);
+  state.motionOk = m.ok;
+  const ms = performance.now() - t0;
+  state.stats.motionMs = state.stats.motionMs ? state.stats.motionMs * 0.9 + ms * 0.1 : ms;
+  if (state.debug) {
+    state.motionPoints = motion.points;
+    state.motionStats = `${motion.stats.inliers}/${motion.stats.tracked} ${state.stats.motionMs.toFixed(1)}ms`;
+  }
+  if (m.H) {
+    tracker.warp(scaleH(m.H, 1 / Math.min(img.width, img.height)), now);
+    state.tracks = tracker.tracks;
+  }
+  return m.k;
+}
+let grey = null;
+
+// Hand a frame to the analyser (a worker when possible). The result comes
+// back a little later: when following, it is moved by the camera motion
+// since its frame was taken, so it lands where its surface is now;
+// otherwise it is stamped with the capture time, as seen.
+function analyze(now, img, k) {
   if (analyzer.busy) return false;
-  const img = grab();
   const procW = state.procW;
   const procH = state.procH;
   return analyzer.submit(img, state.debug, (res) => {
     if (!res || procW !== state.procW || procH !== state.procH) return; // layout changed meanwhile
     const unit = Math.min(procW, procH);
     const viewN = { w: procW / unit, h: procH / unit };
-    const dets = res.regions.map((r) => normalise(r, unit));
-    tracker.update(dets, now, viewN, (tr) => fadeBarsFor(tr) * audio.bar * 1000 + 150);
+    let dets = res.regions.map((r) => normalise(r, unit));
+    let t = now;
+    const C = k >= 0 && state.follow ? motion.chain(k) : null;
+    if (C) {
+      const Cv = scaleH(C, 1 / unit);
+      dets = dets.map((d) => warpRegion(d, Cv));
+      t = state.now;
+    }
+    tracker.update(dets, t, viewN, (tr) => fadeBarsFor(tr) * audio.bar * 1000 + 150);
     state.tracks = tracker.tracks;
     state.trackById = new Map(state.tracks.map((t) => [t.id, t]));
     syncVoices(viewN);
@@ -223,6 +262,7 @@ function syncVoices(viewN) {
 
 let lastFrame = 0;
 let lastAnalysis = 0;
+let lastGrab = 0;
 
 function loop(ts) {
   requestAnimationFrame(loop);
@@ -240,7 +280,13 @@ function loop(ts) {
   stall = 0;
   if (src.step) src.step(dt, ts);
 
-  if (ts - lastAnalysis >= 1000 / ANALYSIS_HZ - 4 && analyze(ts)) lastAnalysis = ts;
+  const analysisDue = ts - lastAnalysis >= 1000 / ANALYSIS_HZ - 4;
+  if (state.follow ? ts - lastGrab >= MOTION_MS : analysisDue && !analyzer.busy) {
+    lastGrab = ts;
+    const img = grab();
+    const k = follow(img, ts);
+    if (analysisDue && analyze(ts, img, k)) lastAnalysis = ts;
+  }
 
   if (audio.ctx) {
     for (const e of audio.drainEvents()) {
@@ -276,6 +322,7 @@ function stalled(src, ts) {
   if (src.kind !== 'camera' || document.hidden) return;
   if (ts - stall > 400 && state.tracks.length) {
     tracker.reset();
+    motion.reset();
     state.tracks = [];
     state.trackById = new Map();
     state.followers = new Map();
@@ -354,6 +401,7 @@ async function start(mode) {
   state.mode = mode;
   document.body.dataset.mode = mode;
   tracker.reset();
+  motion.reset();
   for (const id of audio.voices.keys()) audio.fadeOut(id, 0.5);
   $('#start').hidden = true;
   document.body.classList.add('running');
@@ -412,6 +460,13 @@ bindRange('maxv', (v) => String(v), (v) => {
 });
 bindRange('vol', (v) => v.toFixed(2), (v) => audio.setVolume(v));
 
+const followEl = $('#follow');
+followEl.checked = state.follow;
+followEl.addEventListener('change', () => {
+  state.follow = followEl.checked;
+  motion.reset();
+});
+
 const dbg = $('#dbg');
 dbg.checked = state.debug;
 dbg.addEventListener('change', () => {
@@ -452,7 +507,7 @@ $('#save-poster').addEventListener('click', async () => {
 });
 
 // handle for poking at the app from the console (?debug)
-if (params.has('debug')) window.ostinascope = { state, analyzer, tracker, audio };
+if (params.has('debug')) window.ostinascope = { state, analyzer, tracker, audio, motion };
 
 // dev shortcut: ?mode=demo starts without the splash (audio stays locked
 // until the first tap)

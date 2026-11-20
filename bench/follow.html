@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Follow bench — Ostinascope</title>
+  <style>
+    body { font: 13px/1.5 ui-monospace, Menlo, monospace; margin: 16px; background: #f4f1ea; color: #141414; }
+    table { border-collapse: collapse; }
+    td, th { padding: 2px 10px; border-bottom: 1px solid #ccc; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+  </style>
+</head>
+<body>
+  <p>overlay vs surface (see bench/follow.js). ?seqs=6&amp;frames=150&amp;photos=zebra_0.jpg,facade_1.jpg</p>
+  <pre id="log"></pre>
+  <table id="out"></table>
+  <script type="module">
+    import { run } from './follow.js';
+    const q = new URLSearchParams(location.search);
+    const photos = (q.get('photos') || '').split(',').filter(Boolean).map((p) => `data/photos/${p}`);
+    const logEl = document.getElementById('log');
+    const log = (s) => { logEl.textContent = s; };
+    window.benchResult = null;
+    const tracker = q.get('tracker') ? JSON.parse(q.get('tracker')) : {};
+    run({ seqs: +(q.get('seqs') || 6), frames: +(q.get('frames') || 150), photos, tracker, log })
+      .then((rep) => {
+        window.benchResult = rep;
+        const cols = Object.keys(rep[0]);
+        document.getElementById('out').innerHTML = `<tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>` +
+          rep.map((r) => `<tr>${cols.map((c) => `<td>${r[c]}</td>`).join('')}</tr>`).join('');
+        log('done');
+      })
+      .catch((e) => { window.benchResult = { error: String(e.stack || e) }; log(String(e)); });
+  </script>
+</body>
+</html>

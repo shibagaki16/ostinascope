@@ -5,9 +5,73 @@
 //   cand    seen, but not yet trusted (needs a few consecutive frames)
 //   active  trusted — its loop is playing
 //   fading  lost — its loop fades out over 1–2 bars; can still be re-acquired
+// Between analyses the camera motion (motion.js) moves every track with the
+// surface it is on (warp); each track keeps a quad, which a tilted surface
+// turns into a trapezoid.
 // Pure module (no DOM).
 
 import { angleDiff, lerp, TO_DEG as DEG } from './util.js';
+import { applyH, localScale } from './homography.js';
+
+/** The four corners of a region's box (clockwise from top-left). */
+export function boxQuad(r) {
+  const x0 = r.cx - r.w / 2;
+  const y0 = r.cy - r.h / 2;
+  const x1 = r.cx + r.w / 2;
+  const y1 = r.cy + r.h / 2;
+  return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+}
+
+// cx, cy, w, h: the quad's bounding box (what matching and the sound use)
+function boundQuad(r) {
+  const xs = r.quad.map((p) => p[0]);
+  const ys = r.quad.map((p) => p[1]);
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const y0 = Math.min(...ys);
+  const y1 = Math.max(...ys);
+  r.cx = (x0 + x1) / 2;
+  r.cy = (y0 + y1) / 2;
+  r.w = x1 - x0;
+  r.h = y1 - y0;
+}
+
+/**
+ * Move a region (a detection or a track, in view units) by a homography:
+ * its quad, centre, members, and — locally — its angle and period.
+ * Returns the region (changed in place).
+ */
+export function warpRegion(r, H) {
+  const ox = r.cx;
+  const oy = r.cy;
+  r.quad = (r.quad || boxQuad(r)).map(([x, y]) => applyH(H, x, y));
+  const k = localScale(H, ox, oy, 0.01);
+  if (Number.isFinite(r.angle)) {
+    const t = r.angle / DEG;
+    const [x0, y0] = applyH(H, ox, oy);
+    const [x1, y1] = applyH(H, ox + 0.01 * Math.cos(t), oy - 0.01 * Math.sin(t));
+    r.angle = (((Math.atan2(-(y1 - y0), x1 - x0) * DEG) % 180) + 180) % 180;
+  }
+  if (r.period) r.period *= k;
+  if (r.period2) r.period2 *= k;
+  if (r.size) r.size *= k;
+  if (r.center) {
+    const [x, y] = applyH(H, r.center.x, r.center.y);
+    r.center = { x, y };
+  }
+  if (r.members) {
+    r.members = r.members.map((m) => {
+      const q = [[m.x, m.y], [m.x + m.w, m.y], [m.x + m.w, m.y + m.h], [m.x, m.y + m.h]].map(([x, y]) => applyH(H, x, y));
+      const xs = q.map((p) => p[0]);
+      const ys = q.map((p) => p[1]);
+      const x0 = Math.min(...xs);
+      const y0 = Math.min(...ys);
+      return { ...m, x: x0, y: y0, w: Math.max(...xs) - x0, h: Math.max(...ys) - y0, t: m.t !== undefined ? m.t * k : m.t };
+    });
+  }
+  boundQuad(r);
+  return r;
+}
 
 export const TRACKER_DEFAULTS = Object.freeze({
   confirmHits: 3, // consecutive-ish frames before a pattern may sound
@@ -18,6 +82,10 @@ export const TRACKER_DEFAULTS = Object.freeze({
   maxLogPeriod: 0.4, // |ln(period ratio)| allowed between frames
   maxAngle: 30, // degrees, for stripes
   smoothPos: 0.5,
+  // a track the camera motion keeps on its surface lags nothing by being
+  // smoothed, so its outline follows each new sighting less: detection
+  // boxes are made of analysis cells and jitter by up to one
+  smoothPosMoved: 0.25,
   smoothParam: 0.3,
   edgeMargin: 0.06,
 });
@@ -28,8 +96,10 @@ export function createTracker(options = {}) {
   let nextId = 1;
   let tracks = [];
 
+  // Where a track should be now. A track the camera motion keeps in place
+  // is already there; otherwise extrapolate from its last sighting.
   function predict(tr, t) {
-    const dt = Math.min((t - tr.lastSeen) / 1000, 0.6);
+    const dt = Math.min((t - Math.max(tr.lastSeen, tr.movedAt)) / 1000, 0.6);
     return { x: tr.cx + tr.vx * dt * 0.7, y: tr.cy + tr.vy * dt * 0.7 };
   }
 
@@ -64,6 +134,7 @@ export function createTracker(options = {}) {
       resumed: false,
       vx: 0,
       vy: 0,
+      movedAt: -Infinity, // last time the camera motion moved it
       ...pick(d),
     };
     tr.ac = Math.cos((2 * d.angle) / DEG);
@@ -75,7 +146,7 @@ export function createTracker(options = {}) {
 
   function pick(d) {
     return {
-      cx: d.cx, cy: d.cy, w: d.w, h: d.h,
+      cx: d.cx, cy: d.cy, w: d.w, h: d.h, quad: (d.quad || boxQuad(d)).map((p) => [...p]),
       period: d.period, angle: d.angle,
       period2: d.period2, ratio: d.ratio, latticeAngle: d.latticeAngle,
       center: d.center ? { ...d.center } : null,
@@ -87,18 +158,20 @@ export function createTracker(options = {}) {
 
   function absorb(tr, d, t) {
     const dt = Math.max(1e-3, (t - tr.lastSeen) / 1000);
-    const sp = opt.smoothPos;
+    const moved = tr.movedAt > tr.lastSeen;
+    const sp = moved ? opt.smoothPosMoved : opt.smoothPos;
     const s = opt.smoothParam;
-    const ncx = lerp(tr.cx, d.cx, sp);
-    const ncy = lerp(tr.cy, d.cy, sp);
-    if (tr.misses === 0) {
-      tr.vx = lerp(tr.vx, (ncx - tr.cx) / dt, 0.5);
-      tr.vy = lerp(tr.vy, (ncy - tr.cy) / dt, 0.5);
+    const dq = d.quad || boxQuad(d);
+    const ocx = tr.cx;
+    const ocy = tr.cy;
+    tr.quad = tr.quad.map(([x, y], i) => [lerp(x, dq[i][0], sp), lerp(y, dq[i][1], sp)]);
+    boundQuad(tr);
+    // without camera motion, the velocity comes from the sightings (with
+    // it, from the motion itself: see warp)
+    if (tr.misses === 0 && !moved) {
+      tr.vx = lerp(tr.vx, (tr.cx - ocx) / dt, 0.5);
+      tr.vy = lerp(tr.vy, (tr.cy - ocy) / dt, 0.5);
     }
-    tr.cx = ncx;
-    tr.cy = ncy;
-    tr.w = lerp(tr.w, d.w, sp);
-    tr.h = lerp(tr.h, d.h, sp);
     tr.period = Math.exp(lerp(Math.log(tr.period), Math.log(d.period), s));
     tr.ac = lerp(tr.ac, Math.cos((2 * d.angle) / DEG), s);
     tr.as = lerp(tr.as, Math.sin((2 * d.angle) / DEG), s);
@@ -241,6 +314,22 @@ export function createTracker(options = {}) {
     return tracks;
   }
 
+  /**
+   * Camera motion since the last call: H takes view-unit points of the
+   * previous frame to this one. Every track moves with it.
+   */
+  function warp(H, t) {
+    for (const tr of tracks) {
+      const ox = tr.cx;
+      const oy = tr.cy;
+      warpRegion(tr, H);
+      const dt = Math.max(1e-3, (t - (Number.isFinite(tr.movedAt) ? tr.movedAt : t - 33)) / 1000);
+      tr.vx = lerp(tr.vx, (tr.cx - ox) / dt, 0.3);
+      tr.vy = lerp(tr.vy, (tr.cy - oy) / dt, 0.3);
+      tr.movedAt = t;
+    }
+  }
+
   function overlap(a, b) {
     const ix = Math.max(0, Math.min(a.cx + a.w / 2, b.cx + b.w / 2) - Math.max(a.cx - a.w / 2, b.cx - b.w / 2));
     const iy = Math.max(0, Math.min(a.cy + a.h / 2, b.cy + b.h / 2) - Math.max(a.cy - a.h / 2, b.cy - b.h / 2));
@@ -249,6 +338,7 @@ export function createTracker(options = {}) {
 
   return {
     update,
+    warp,
     get tracks() {
       return tracks;
     },

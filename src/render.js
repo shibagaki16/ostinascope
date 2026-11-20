@@ -85,6 +85,35 @@ export function createRenderer(canvas) {
     };
   }
 
+  // A track's outline: its quad (a trapezoid where the surface is seen at
+  // an angle), in CSS px.
+  function quadPath(q) {
+    return () => {
+      ctx.beginPath();
+      ctx.moveTo(q[0][0], q[0][1]);
+      for (let i = 1; i < 4; i++) ctx.lineTo(q[i][0], q[i][1]);
+      ctx.closePath();
+    };
+  }
+
+  // Corner brackets along the quad's edges, L px long (at most a quarter
+  // of each edge).
+  function quadCorners(q, L) {
+    return () => {
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const p = q[i];
+        const a = q[(i + 3) % 4];
+        const b = q[(i + 1) % 4];
+        const la = Math.min(L, Math.hypot(a[0] - p[0], a[1] - p[1]) / 4) / Math.max(1e-6, Math.hypot(a[0] - p[0], a[1] - p[1]));
+        const lb = Math.min(L, Math.hypot(b[0] - p[0], b[1] - p[1]) / 4) / Math.max(1e-6, Math.hypot(b[0] - p[0], b[1] - p[1]));
+        ctx.moveTo(p[0] + (a[0] - p[0]) * la, p[1] + (a[1] - p[1]) * la);
+        ctx.lineTo(p[0], p[1]);
+        ctx.lineTo(p[0] + (b[0] - p[0]) * lb, p[1] + (b[1] - p[1]) * lb);
+      }
+    };
+  }
+
   // Dimension line across `n` intervals of length p, along direction (nx, ny).
   function dimension(cx, cy, nx, ny, p, n, color, alpha) {
     const tx = ny;
@@ -234,19 +263,19 @@ export function createRenderer(canvas) {
     const w = tr.w * S;
     const h = tr.h * S;
     const f = tr.flash || 0;
+    const q = (tr.quad || [[tr.cx - tr.w / 2, tr.cy - tr.h / 2], [tr.cx + tr.w / 2, tr.cy - tr.h / 2],
+      [tr.cx + tr.w / 2, tr.cy + tr.h / 2], [tr.cx - tr.w / 2, tr.cy + tr.h / 2]]).map(([a, b]) => [a * S, b * S]);
+    const outline = quadPath(q);
 
     if (tr.state === 'cand') {
-      stroke(corners(x, y, w, h, Math.min(10, w / 4, h / 4)), color, 1, 0.35, [2, 3]);
+      stroke(quadCorners(q, 10), color, 1, 0.35, [2, 3]);
       return;
     }
     if (tr.state === 'fading') {
       const k = Math.max(0, 1 - (now - tr.fadeStart) / Math.max(1, tr.fadeMs));
       if (tr.exit && tr.exit.kind === 'edge') drawExit(tr, S, k, color, bounds);
       else {
-        stroke(() => {
-          ctx.beginPath();
-          ctx.rect(x, y, w, h);
-        }, color, 1, 0.6 * k, [4, 4]);
+        stroke(outline, color, 1, 0.6 * k, [4, 4]);
         tag(shortLabel(tr) + ' …', x, y - 4, color, { alpha: k });
       }
       return;
@@ -254,21 +283,16 @@ export function createRenderer(canvas) {
 
     if (f > 0.02) {
       ctx.fillStyle = rgba(color, 0.12 * f);
-      ctx.fillRect(x, y, w, h);
+      outline();
+      ctx.fill();
     }
     if (tr.muted) {
-      stroke(() => {
-        ctx.beginPath();
-        ctx.rect(x, y, w, h);
-      }, color, 1, 0.5, [4, 4]);
+      stroke(outline, color, 1, 0.5, [4, 4]);
       tag(`${shortLabel(tr)} ／ MUTED`, x, Math.max(y - 4, bounds.top + 14), color, { alpha: 0.7 });
       return;
     }
-    stroke(() => {
-      ctx.beginPath();
-      ctx.rect(x + 0.5, y + 0.5, w - 1, h - 1);
-    }, color, 1, 0.45 + 0.4 * f);
-    stroke(corners(x, y, w, h, Math.min(16, w / 4, h / 4)), color, 2 + 1.5 * f, 1);
+    stroke(outline, color, 1, 0.45 + 0.4 * f);
+    stroke(quadCorners(q, 16), color, 2 + 1.5 * f, 1);
     glyph(tr, S, color, 0.85);
     const text = labelFor(tr, S) + (tr.unison ? ` ＝${pad2(tr.unison)}` : '');
     ctx.font = `500 10.5px ${FONT}`;
@@ -416,6 +440,15 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
+  // Debug: the corners the camera motion is followed by.
+  function drawMotion(pts, k) {
+    if (!pts || !pts.n) return;
+    ctx.save();
+    ctx.fillStyle = 'rgba(91,227,155,0.85)';
+    for (let i = 0; i < pts.n; i++) ctx.fillRect(pts.x[i] * k - 1, pts.y[i] * k - 1, 2, 2);
+    ctx.restore();
+  }
+
   function drawHUD(st, bounds) {
     const top = st.insets.top;
     const g = ctx.createLinearGradient(0, 0, 0, bounds.top + 10);
@@ -452,7 +485,8 @@ export function createRenderer(canvas) {
       ctx.fillStyle = 'rgba(244,241,234,0.65)';
       ctx.font = `400 9px ${FONT}`;
       ctx.fillText(
-        `analysis ${st.stats.ms.toFixed(1)}ms · ${st.procW}×${st.procH} · regions ${st.stats.regions} · tracks ${st.tracks.length}`,
+        `analysis ${st.stats.ms.toFixed(1)}ms · ${st.procW}×${st.procH} · regions ${st.stats.regions} · tracks ${st.tracks.length}` +
+          (st.follow ? ` · follow ${st.motionOk ? 'ok' : '—'} ${st.motionStats || ''}` : ''),
         12, top + 48,
       );
     }
@@ -547,7 +581,10 @@ export function createRenderer(canvas) {
     };
 
     drawGrid(st.result, k, S, bounds);
-    if (st.debug) drawCells(st.result, k);
+    if (st.debug) {
+      drawCells(st.result, k);
+      drawMotion(st.motionPoints, k);
+    }
 
     placed = [];
     const order = { cand: 0, fading: 1, active: 2 };
