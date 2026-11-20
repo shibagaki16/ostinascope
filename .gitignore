@@ -52,3 +52,6 @@ ostinascope-specimen*.png
 
 # Benchmark data (downloaded photos, generated views, results)
 bench/data/
+
+# Poster editor: previous version kept on save
+poster/*.bak

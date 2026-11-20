@@ -17,6 +17,7 @@
 | PC のカメラで試す | 同上 | http://localhost:8000/ |
 | スマホ実機で試す（同じ Wi-Fi） | `python3 scripts/serve.py --https` | 表示される `https://<LAN-IP>:8443/` |
 | テスト | `npm test`（= `node --test test/*.test.mjs`） | — |
+| ポスターの紙面を編集 | `python3 tools/poster-editor/serve.py` | http://localhost:8010/tools/poster-editor/ （使い方は `tools/poster-editor/README.md`） |
 
 - カメラは **HTTPS か localhost** でしか使えない。`--https` は自己署名証明書を `.cert/` に作る（git 管理外）。iPhone では警告画面で「詳細を表示 → このWebサイトを閲覧」。
 - 安定した実機テスト・展示は **GitHub Pages** に置くのが確実（リポジトリ直下をそのまま公開すればよい）。
@@ -138,6 +139,7 @@ src/sources.js      カメラ／デモ画像
 src/poster.js       ポスターの描画（要素の種類・項目・描き方）
 src/util.js         共通の小さな計算
 poster/poster.json  ポスターの紙面データ（配色と要素の並び）
+tools/poster-editor/ ポスター編集ツール（アプリからは独立。消してもアプリは動く）
 src/style.css
 test/               合成画像による検出テスト、追跡・マッピング・ポスターデータのテスト
 scripts/serve.py    開発サーバ（--https で LAN 向け自己署名 HTTPS）

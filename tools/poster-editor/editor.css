@@ -1,0 +1,122 @@
+:root {
+  --bg: #e6e3dd;
+  --pane: #f7f6f3;
+  --line: #cfcac1;
+  --ink: #1b1b1b;
+  --muted: #6d6a64;
+  --accent: #1f4fd1;
+  --sel: #d7262b;
+  font: 13px/1.4 "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color: var(--ink);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  height: 100vh;
+  display: grid;
+  grid-template: "head head head" auto "layers stage props" 1fr "foot foot foot" auto / 240px 1fr 320px;
+  background: var(--bg);
+}
+header {
+  grid-area: head;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  padding: 8px 12px;
+  background: var(--pane);
+  border-bottom: 1px solid var(--line);
+}
+header .group { display: flex; align-items: center; gap: 6px; }
+header .right { margin-left: auto; }
+header a { color: var(--accent); }
+#status { color: var(--muted); min-width: 9em; }
+#status.dirty { color: var(--sel); }
+button, .button, select, input, textarea {
+  font: inherit;
+  color: inherit;
+}
+button, .button {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+button:hover, .button:hover { border-color: var(--ink); }
+aside {
+  background: var(--pane);
+  overflow: auto;
+  padding: 8px 10px;
+}
+#layers { grid-area: layers; border-right: 1px solid var(--line); }
+#props { grid-area: props; border-left: 1px solid var(--line); }
+.pane-title {
+  font-weight: 700;
+  margin: 10px 0 6px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--line);
+}
+.row { display: flex; gap: 4px; margin: 6px 0; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 12px; }
+
+#layer-list { list-style: none; margin: 0; padding: 0; }
+#layer-list li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#layer-list li:hover { background: #ece9e3; }
+#layer-list li.sel { background: var(--ink); color: #fff; }
+#layer-list li.linked { box-shadow: inset 3px 0 0 var(--sel); }
+#layer-list li .eye { width: 1.4em; text-align: center; opacity: 0.8; }
+#layer-list li.hidden .name { opacity: 0.4; text-decoration: line-through; }
+#layer-list li .type { color: var(--muted); font-size: 11px; margin-left: auto; }
+#layer-list li.sel .type { color: #bbb; }
+
+#stage { grid-area: stage; overflow: auto; position: relative; }
+#canvas-wrap { position: relative; margin: 16px; width: max-content; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15); }
+#canvas-wrap canvas { display: block; }
+#overlay { position: absolute; inset: 0; cursor: default; }
+#overlay.scope { cursor: crosshair; }
+
+#fields label {
+  display: grid;
+  grid-template-columns: 7.5em 1fr;
+  gap: 6px;
+  align-items: center;
+  margin: 3px 0;
+}
+#fields label > span { color: var(--muted); font-size: 12px; }
+#fields input[type=number], #fields input[type=text], #fields select, #fields textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 4px;
+  background: #fff;
+}
+#fields textarea { min-height: 7em; resize: vertical; white-space: pre; }
+.colorpick { display: flex; gap: 4px; align-items: center; }
+.colorpick input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid var(--line); }
+.colorpick input[type=text] { flex: 1; }
+
+#palette .swatch { display: grid; grid-template-columns: 28px 1fr 7em auto; gap: 4px; align-items: center; margin: 3px 0; }
+#palette input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid var(--line); }
+#palette input[type=text] { border: 1px solid var(--line); border-radius: 3px; padding: 2px 4px; width: 100%; }
+
+#scope-out table { border-collapse: collapse; width: 100%; color: var(--ink); }
+#scope-out td { padding: 1px 4px; border-bottom: 1px solid var(--line); }
+#scope-out .chip { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+
+footer {
+  grid-area: foot;
+  padding: 3px 12px;
+  color: var(--muted);
+  background: var(--pane);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
