@@ -169,7 +169,7 @@ export function createTracker(options = {}) {
       center: d.center ? { ...d.center } : null,
       contrast: d.contrast, sharp: d.sharp, hue: d.hue, sat: d.sat,
       score: d.score, cells: d.cells, level: d.level,
-      members: d.members, count: d.count, evenness: d.evenness, size: d.size,
+      members: d.members, count: d.count, evenness: d.evenness, size: d.size, receding: d.receding || 0,
       plane: d.plane || null,
       surface: d.surface ?? null, // which surface the camera motion puts it on
     };
@@ -221,6 +221,7 @@ export function createTracker(options = {}) {
       tr.count = d.count;
       tr.evenness = d.evenness;
       tr.size = d.size;
+      tr.receding = d.receding || 0;
     }
     tr.hx = lerp(tr.hx, Math.cos(d.hue / DEG) * d.sat, s);
     tr.hy = lerp(tr.hy, Math.sin(d.hue / DEG) * d.sat, s);

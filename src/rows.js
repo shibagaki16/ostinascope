@@ -11,6 +11,15 @@
 //   3. a few distinctive anchor windows each search the whole frame; peaks
 //      that stand far above the typical similarity are its look-alikes
 //   4. the largest set of look-alikes on one line, sensibly spaced → ROW
+//   5. a row going away from the camera: its things shrink with distance.
+//      Each one's apparent size is measured (the window size it matches the
+//      anchor best at). Things of one real size on a straight line shrink
+//      linearly along it, to nothing at its vanishing point t_v:
+//      w = a (t − t_v); and their real position is X = −1/(t − t_v) (up to
+//      scale and offset). One line through the sizes gives t_v, the rhythm
+//      then follows the real spacing, not the squeezed one — and the row is
+//      extended with smaller (or larger) windows where the next thing
+//      should be.
 //
 // Pure module (no DOM).
 
@@ -43,6 +52,12 @@ export const ROW_DEFAULTS = Object.freeze({
   minDip: 0.15, // similarity must drop this much halfway between neighbours
   onLine: 0.5, // share of all look-alikes in the frame that must be in the row
   maxUneven: 0.55, // gap standard deviation / mean gap
+  // perspective (5.): a row counts as receding when its things' sizes change
+  // by this factor end to end, steadily along it, and fit the model
+  perspective: true,
+  minSizeChange: 1.3,
+  minSizeOrder: 0.8, // rank correlation of size with position along the row
+  maxPerspResidual: 0.15, // sizes off their line, relative to the mean size (rms)
 });
 
 // The detector's sensitivity slider, applied to the row thresholds. Only
@@ -155,6 +170,7 @@ export function createRowFinder(options = {}) {
       }
     }
     cur = { nx, ny, n, s, W1, cut: [0, Math.round(s / 3), Math.round((2 * s) / 3), s] };
+    gridH = bh;
     return cur;
   }
 
@@ -196,6 +212,173 @@ export function createRowFinder(options = {}) {
     for (let j = 0; j < ND; j++) t += desc[o + j] * desc[o + j];
     const tn = 1 / Math.sqrt(t + 1e-12);
     for (let j = 0; j < ND; j++) desc[o + j] *= tn;
+  }
+
+  // Integral image at fractional block coordinates (bilinear: as if each
+  // block's content were spread evenly over it), all channels into out.
+  function iiAll(W1, x, y, out, o) {
+    const C = NB + 1;
+    const x0 = Math.floor(x);
+    const y0 = Math.floor(y);
+    const fx = x - x0;
+    const fy = y - y0;
+    const x1 = Math.min(W1 - 1, x0 + 1);
+    const y1 = Math.min(gridH, y0 + 1);
+    const i00 = (y0 * W1 + x0) * C;
+    const i10 = (y0 * W1 + x1) * C;
+    const i01 = (y1 * W1 + x0) * C;
+    const i11 = (y1 * W1 + x1) * C;
+    const w00 = (1 - fx) * (1 - fy);
+    const w10 = fx * (1 - fy);
+    const w01 = (1 - fx) * fy;
+    const w11 = fx * fy;
+    for (let c = 0; c < C; c++) out[o + c] = w00 * ii[i00 + c] + w10 * ii[i10 + c] + w01 * ii[i01 + c] + w11 * ii[i11 + c];
+  }
+  const grid16 = new Float32Array(16 * (NB + 1));
+
+  // Descriptor of the window at (wx, wy), size sz — both in blocks and
+  // fractional (things shrink smoothly along a row) — into out. false if
+  // it does not fit. The 3×3 cells share their 16 corners: read once.
+  function descAt(wx, wy, sz, out) {
+    const { W1 } = cur;
+    const bw = W1 - 1;
+    const bh = gridH;
+    if (wx < 0 || wy < 0 || wx + sz > bw || wy + sz > bh || sz < 2) return false;
+    const C = NB + 1;
+    const cut = [0, sz / 3, (2 * sz) / 3, sz];
+    for (let gy = 0; gy < 4; gy++) for (let gx = 0; gx < 4; gx++) iiAll(W1, wx + cut[gx], wy + cut[gy], grid16, (gy * 4 + gx) * C);
+    const area = (sz / 3) * (sz / 3);
+    let h2 = 0;
+    for (let gy = 0; gy < 3; gy++) {
+      for (let gx = 0; gx < 3; gx++) {
+        const a = (gy * 4 + gx) * C;
+        const b = (gy * 4 + gx + 1) * C;
+        const c2 = ((gy + 1) * 4 + gx) * C;
+        const d = ((gy + 1) * 4 + gx + 1) * C;
+        const k = gy * 3 + gx;
+        for (let c = 0; c < NB; c++) {
+          const r = Math.sqrt(Math.max(0, grid16[d + c] - grid16[b + c] - grid16[c2 + c] + grid16[a + c]));
+          out[k * NB + c] = r;
+          h2 += r * r;
+        }
+        lbuf[k] = (grid16[d + NB] - grid16[b + NB] - grid16[c2 + NB] + grid16[a + NB]) / Math.max(1e-6, area);
+      }
+    }
+    const hn = 1 / Math.sqrt(h2 + 1e-9);
+    for (let j = 0; j < 9 * NB; j++) out[j] *= hn;
+    let lm = 0;
+    for (let k = 0; k < 9; k++) lm += lbuf[k] / 9;
+    let lv = 0;
+    for (let k = 0; k < 9; k++) lv += (lbuf[k] - lm) ** 2;
+    const ln = 0.5 / Math.sqrt(lv + 0.002);
+    for (let k = 0; k < 9; k++) out[9 * NB + k] = (lbuf[k] - lm) * ln;
+    let t = 0;
+    for (let j = 0; j < ND; j++) t += out[j] * out[j];
+    const tn = 1 / Math.sqrt(t + 1e-12);
+    for (let j = 0; j < ND; j++) out[j] *= tn;
+    return true;
+  }
+  const dtmp = new Float32Array(ND);
+  const danc = new Float32Array(ND);
+  let gridH = 0;
+
+  // Similarity to the anchor (danc) of a window of size sz centred near
+  // (cx, cy) blocks: the best over shifts of up to ±range in steps of step.
+  function simSized(cx, cy, sz, range = 0.5, step = 0.5) {
+    let best = -1;
+    let bx = cx;
+    let by = cy;
+    for (let dy = -range; dy <= range + 1e-9; dy += step) {
+      for (let dx = -range; dx <= range + 1e-9; dx += step) {
+        const wx = cx - sz / 2 + dx;
+        const wy = cy - sz / 2 + dy;
+        if (!descAt(wx, wy, sz, dtmp)) continue;
+        let d = 0;
+        for (let j = 0; j < ND; j++) d += danc[j] * dtmp[j];
+        if (d > best) {
+          best = d;
+          bx = cx + dx;
+          by = cy + dy;
+        }
+      }
+    }
+    return { sim: best, cx: bx, cy: by };
+  }
+
+  // The size (blocks) at which a thing near (cx, cy) looks most like the
+  // anchor: window sizes ×1.1 apart (a window matching a larger thing also
+  // sits a little off: shifts up to a block), refined by a parabola in
+  // log-size. Returns { size, sim, cx, cy }. `quick`: sizes ×1.25 apart,
+  // whole-block shifts (to see whether sizes change at all).
+  function sizeOf(cx, cy, lo, hi, quick = false) {
+    const f = quick ? 1.25 : 1.1;
+    const tries = [];
+    for (let sz = Math.max(2, lo); sz <= hi * 1.001; sz *= f) tries.push({ sz, ...simSized(cx, cy, sz, 1, 1) });
+    if (!tries.length) return null;
+    let bi = 0;
+    tries.forEach((t, i) => {
+      if (t.sim > tries[bi].sim) bi = i;
+    });
+    const b = tries[bi];
+    let size = b.sz;
+    if (bi > 0 && bi < tries.length - 1) {
+      const l = tries[bi - 1].sim;
+      const r = tries[bi + 1].sim;
+      const den = l - 2 * b.sim + r;
+      if (den < 0) size = b.sz * f ** clamp((0.5 * (l - r)) / den, -0.5, 0.5);
+    }
+    return { size, sim: b.sim, cx: b.cx, cy: b.cy };
+  }
+
+  // Real positions along a receding row from apparent sizes (see 5. above):
+  // a line w = a t + b through the sizes gives the vanishing point; returns
+  // positions rescaled to the row's span in the image, or null when the
+  // sizes do not say it recedes.
+  function perspectivePositions(ts, ws, o) {
+    const n = ts.length;
+    if (n < (o.provisional ? 3 : 4)) return null;
+    // sizes change steadily along the row (rank correlation)
+    const rank = (v) => {
+      const idx = v.map((x, i) => [x, i]).sort((p, q) => p[0] - q[0]);
+      const r = new Array(n);
+      idx.forEach(([, i], j) => (r[i] = j));
+      return r;
+    };
+    const rt = rank(ts);
+    const rw = rank(ws);
+    let d2 = 0;
+    for (let i = 0; i < n; i++) d2 += (rt[i] - rw[i]) ** 2;
+    const rho = 1 - (6 * d2) / (n * (n * n - 1));
+    if (!o.provisional && Math.abs(rho) < o.minSizeOrder) return null;
+    // w = a t + b
+    const mt = ts.reduce((p, q) => p + q, 0) / n;
+    const mw = ws.reduce((p, q) => p + q, 0) / n;
+    let sxy = 0;
+    let sxx = 0;
+    for (let i = 0; i < n; i++) {
+      sxy += (ts[i] - mt) * (ws[i] - mw);
+      sxx += (ts[i] - mt) ** 2;
+    }
+    if (!(sxx > 0)) return null;
+    const a = sxy / sxx;
+    const b = mw - a * mt;
+    const wp = ts.map((t) => a * t + b);
+    if (wp.some((w) => !(w > 0))) return null;
+    const rms = Math.sqrt(ws.reduce((acc, w, i) => acc + (w - wp[i]) ** 2, 0) / n);
+    if (rms > o.maxPerspResidual * mw) return null;
+    const change = Math.max(wp[0], wp[n - 1]) / Math.min(wp[0], wp[n - 1]);
+    if (change < o.minSizeChange) return null;
+    const tv = -b / a;
+    const X = ts.map((t) => -1 / (t - tv));
+    const span = ts[n - 1] - ts[0];
+    const toPos = (x) => ts[0] + ((x - X[0]) / (X[n - 1] - X[0])) * span;
+    return {
+      pos: X.map(toPos),
+      sizeChange: change,
+      sizes: wp,
+      // for growing the row: real ↔ image along the row
+      model: { a, b, tv, X0: X[0], Xn: X[n - 1], t0: ts[0], span },
+    };
   }
 
   function cos(a, b) {
@@ -245,6 +428,95 @@ export function createRowFinder(options = {}) {
     const B = opt.block;
     const k = B * scale; // block → analysis px
     const out = [];
+    // the same row is found from several of its things (each can be the
+    // anchor): its perspective is worked out once per frame
+    const recedeMemo = new Map();
+    // 5. A row's things' sizes and real positions; grow the row along its
+    // line with windows of the size the model expects there. Returns
+    // { row, pos, sizeChange } (row with .size per thing) or null.
+    function recede(row0, a, s, nx, ny, need, line, u) {
+      // the anchor's own descriptor, to match any window size against
+      ensure(a);
+      danc.set(desc.subarray(a * ND, a * ND + ND));
+      const lo = Math.max(2, s * 0.55);
+      const hi = s * 1.8;
+      // cheapest first: a receding row's gaps in the image shrink (or grow)
+      // along it — most rows face the camera, and their gaps do not trend
+      const ts0 = row0.map((p) => u({ x: p.x, y: p.y }));
+      const gp = ts0.slice(1).map((t, i) => t - ts0[i]);
+      let trend = 0;
+      if (gp.length >= 2) {
+        let up = 0;
+        let down = 0;
+        for (let i = 1; i < gp.length; i++) {
+          if (gp[i] > gp[i - 1] * 1.03) up++;
+          else if (gp[i] < gp[i - 1] / 1.03) down++;
+        }
+        // every change one way (one exception per four, for longer rows)
+        const steps = gp.length - 1;
+        if (Math.max(up, down) < steps - Math.floor(steps / 4) || Math.min(up, down) > Math.floor(steps / 4) ||
+          Math.max(...gp) / Math.min(...gp) < 1.15) return null;
+        trend = up > down ? 1 : -1;
+      }
+      // then a quick look at the two ends' sizes
+      const end0 = sizeOf(row0[0].x + s / 2, row0[0].y + s / 2, lo, hi, true);
+      const end1 = sizeOf(row0[row0.length - 1].x + s / 2, row0[row0.length - 1].y + s / 2, lo, hi, true);
+      if (!end0 || !end1 || Math.max(end0.size, end1.size) / Math.min(end0.size, end1.size) < 1.12) return null;
+      const measure = (p) => {
+        const z = sizeOf(p.x + s / 2, p.y + s / 2, lo, hi);
+        return z ? { ...p, size: z.size } : { ...p, size: s };
+      };
+      let row = row0.map(measure);
+      // nearer things are larger and further apart: sizes must shrink the
+      // way the gaps do
+      const ws0 = row.map((p) => p.size);
+      if (trend && Math.sign(ws0[ws0.length - 1] - ws0[0]) !== trend) return null;
+      const fit = (r) => perspectivePositions(r.map((p) => u({ x: p.x, y: p.y })), r.map((p) => p.size), opt);
+      let P = fit(row);
+      // three things: too few to judge, but enough to look for a fourth
+      if (!P && row.length === 3) P = perspectivePositions(row.map((p) => u({ x: p.x, y: p.y })), row.map((p) => p.size), { ...opt, provisional: true });
+      if (!P) return null;
+      // grow at both ends while the model finds the next thing
+      for (const end of [1, -1]) {
+        for (let tries = 0; tries < 6 && row.length < opt.maxCount; tries++) {
+          const n = row.length;
+          const ts = row.map((p) => u({ x: p.x, y: p.y }));
+          // next real position: one median real gap beyond the end, back
+          // into the image through the vanishing point; its size on the line
+          const { a: sa, b: sb, tv } = P.model;
+          const X = ts.map((t) => -1 / (t - tv));
+          const gapsR = X.slice(1).map((v, i) => v - X[i]).sort((p, q) => p - q);
+          const g = gapsR[gapsR.length >> 1];
+          const Xn = end > 0 ? X[n - 1] + g : X[0] - g;
+          if (!(Xn < 0)) break; // beyond the vanishing point
+          const tn = tv - 1 / Xn;
+          const wn = sa * tn + sb;
+          if (!(wn >= 2) || wn > 3 * s) break;
+          // the predicted centre on the row's line, in block coords
+          const base = row[end > 0 ? n - 1 : 0];
+          const bt = ts[end > 0 ? n - 1 : 0];
+          const cx = base.x + s / 2 + (tn - bt) * line.ux;
+          const cy = base.y + s / 2 + (tn - bt) * line.uy;
+          const lo2 = Math.max(2, Math.floor(wn * 0.8));
+          const hi2 = Math.ceil(wn * 1.25);
+          const z = sizeOf(cx, cy, lo2, hi2);
+          if (!z || z.sim < need) break;
+          // it must stand apart from the end thing (something different between)
+          const mid = simSized((cx + base.x + s / 2) / 2, (cy + base.y + s / 2) / 2, Math.round((z.size + base.size) / 2));
+          if (mid.sim > Math.min(z.sim, base.sim || 1) - opt.minDip) break;
+          const np = { x: z.cx - s / 2, y: z.cy - s / 2, sim: z.sim, size: z.size, grown: true };
+          const next = end > 0 ? [...row, np] : [np, ...row];
+          const P2 = fit(next);
+          if (!P2) break;
+          row = next;
+          P = P2;
+        }
+      }
+      // a provisional model must have grown into a row that stands on its own
+      if (row.length < 4 || !fit(row)) return null;
+      P = fit(row);
+      return { row: row.map((p, i) => ({ ...p, size: P.sizes[i] })), pos: P.pos, sizeChange: P.sizeChange };
+    }
     for (const s of pass.sizes) {
       const g = describe(bw, bh, s);
       if (!g || g.n < 6) continue;
@@ -391,7 +663,20 @@ export function createRowFinder(options = {}) {
         if (row.length > opt.maxCount) continue; // a long even run is a texture or stripes
         // a thing that resembles half the frame is a texture, not a row
         if (row.length < opt.onLine * total) continue;
-        gaps = gapsOf(row);
+        // 5. going away from the camera? sizes, real positions, and the
+        // things beyond the ends that the anchor's size missed
+        let persp = null;
+        if (opt.perspective && row.length >= 3) {
+          const key = `${s}:` + row.map((p) => `${Math.round(p.x)},${Math.round(p.y)}`).sort().join(';');
+          if (recedeMemo.has(key)) persp = recedeMemo.get(key);
+          else {
+            persp = recede(row, a, s, nx, ny, need, line, u);
+            recedeMemo.set(key, persp);
+          }
+        }
+        if (persp) row = persp.row;
+        const along = persp ? persp.pos : row.map(u);
+        gaps = along.slice(1).map((v, i) => v - along[i]);
         const mean = gaps.reduce((p, q) => p + q, 0) / gaps.length;
         const sd = Math.sqrt(gaps.reduce((p, q) => p + (q - mean) ** 2, 0) / gaps.length);
         if (sd > opt.maxUneven * mean) continue;
@@ -407,13 +692,22 @@ export function createRowFinder(options = {}) {
           scale,
           s,
           size: s * k,
-          members: row.map((p) => ({ x: p.x * k, y: p.y * k, w: s * k, h: s * k, sim: p.sim })),
+          members: row.map((p, i) => {
+            const sz = p.size || s;
+            // centre stays; box of the thing's own size
+            const cx = p.x + s / 2;
+            const cy = p.y + s / 2;
+            return { x: (cx - sz / 2) * k, y: (cy - sz / 2) * k, w: sz * k, h: sz * k, sim: p.sim,
+              along: persp ? (persp.pos[i] - persp.pos[0]) * k : undefined };
+          }),
           ux: line.ux,
           uy: line.uy,
           gap: mean * k,
           evenness: mean > 0 ? sd / mean : 0,
+          receding: persp ? persp.sizeChange : 0,
           sim,
-          score: row.length + sim,
+          // the same row read with its perspective beats a reading without
+          score: row.length + sim + (persp ? 0.5 : 0),
         });
       }
     }
@@ -515,10 +809,12 @@ export function createRowFinder(options = {}) {
       size: r.size,
       count: r.members.length,
       evenness: r.evenness,
+      receding: r.receding || 0, // size change end to end (0: not receding)
       // along-row position (0 = first) and sideways offset of every member
       members: r.members.map((m, i) => ({
         x: m.x, y: m.y, w: m.w, h: m.h, sim: m.sim,
-        t: i ? ((m.x - c0.x) * r.ux + (m.y - c0.y) * r.uy) : 0,
+        // along-row position: the real one for a receding row
+        t: m.along !== undefined ? m.along : i ? ((m.x + m.w / 2 - c0.x - c0.w / 2) * r.ux + (m.y + m.h / 2 - c0.y - c0.h / 2) * r.uy) : 0,
         off: offs[i] - mo,
       })),
     };

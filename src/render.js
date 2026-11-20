@@ -169,7 +169,9 @@ export function createRenderer(canvas) {
         return `${n} CONCENTRIC ／ Δr ${px}px → ${sp ? sp.voice : ''}`;
       case 'ROW': {
         const ev = Math.round((tr.evenness || 0) * 100);
-        return `${n} ROW ×${tr.count || 0} ／ 間隔${px}px ±${ev}% → ${sp ? sp.pattern : ''}`;
+        // a row going away: read with its real spacing (things shrink ×…)
+        const far = tr.receding ? ` ／ 遠近×${tr.receding.toFixed(1)}` : '';
+        return `${n} ROW ×${tr.count || 0} ／ 間隔${px}px ±${ev}%${far} → ${sp ? sp.pattern : ''}`;
       }
       default:
         return `${n} RADIAL → ${sp ? sp.voice : ''}`;

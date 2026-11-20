@@ -91,3 +91,52 @@ test('plane: the focal length is learnt from tilted grids', () => {
   const r = biggest(res, 'lattice');
   assert.ok(r && Math.abs(r.ratio / (4 / 3) - 1) < 0.04, `head-on ratio ${r && r.ratio.toFixed(3)}`);
 });
+
+// Rows of identical things going away from the camera (rows.js, 5.)
+const bottle = (cx) => (x, y) => (Math.abs(x - cx) < 9 && y < 0 && y > -34) || (Math.abs(x - cx) < 3.5 && y <= -34 && y > -46);
+const rowOf = (pos) => {
+  const xs = pos.map((p) => p * 34 - (pos[pos.length - 1] * 34) / 2);
+  return { xs, f: (x, y) => xs.some((cx) => bottle(cx)(x, y + 20)) };
+};
+const topRow = (res) => res.regions.filter((r) => r.type === 'ROW').sort((a, b) => b.count - a.count)[0];
+// positions along the row (0…1) of the detected things vs the true ones
+function rhythmError(r, xs, cam) {
+  const truth = xs.map((x) => applyH(cam.H, x, -20));
+  const ms = [...r.members].sort((a, b) => a.t - b.t);
+  const idx = ms.map((m) => {
+    const cx = m.x + m.w / 2;
+    const cy = m.y + m.h / 2;
+    return truth.reduce((bi, p, i) => (Math.hypot(p[0] - cx, p[1] - cy) < Math.hypot(truth[bi][0] - cx, truth[bi][1] - cy) ? i : bi), 0);
+  });
+  const t0 = ms[0].t;
+  const t1 = ms[ms.length - 1].t;
+  const x0 = xs[idx[0]];
+  const x1 = xs[idx[idx.length - 1]];
+  return ms.reduce((acc, m, i) => acc + Math.abs((m.t - t0) / (t1 - t0) - (xs[idx[i]] - x0) / (x1 - x0)), 0) / ms.length;
+}
+
+test('row: seven bottles going away (55°) are all found, evenly spaced as they stand', () => {
+  const { xs, f } = rowOf([0, 1, 2, 3, 4, 5, 6]);
+  const cam = camera(55, 0);
+  const r = topRow(look(createDetector(), f, cam));
+  assert.ok(r, 'no row');
+  assert.ok(r.count >= 6, `found ${r.count} of 7`);
+  assert.ok(r.receding > 1.3, `receding ${r.receding}`);
+  assert.ok(r.evenness < 0.12, `evenness ${r.evenness.toFixed(2)} (reads as uneven)`);
+  assert.ok(rhythmError(r, xs, cam) < 0.03, `rhythm off by ${rhythmError(r, xs, cam).toFixed(3)}`);
+});
+
+test('row: an unevenly spaced shelf going away keeps its own rhythm (3 : 3 : 4 : 5)', () => {
+  const { xs, f } = rowOf([0, 3, 6, 10, 15].map((v) => v / 1.5));
+  const cam = camera(55, 0);
+  const r = topRow(look(createDetector(), f, cam));
+  assert.ok(r && r.count >= 4, `found ${r && r.count}`);
+  assert.ok(rhythmError(r, xs, cam) < 0.03, `rhythm off by ${rhythmError(r, xs, cam).toFixed(3)}`);
+});
+
+test('row: a row facing the camera is not taken for a receding one', () => {
+  for (const pos of [[0, 3, 6, 10, 15].map((v) => v / 1.5), [0, 2, 3, 5, 6, 8].map((v) => v * 0.8)]) {
+    const r = topRow(look(createDetector(), rowOf(pos).f, camera(0, 0)));
+    if (r) assert.equal(r.receding, 0, `receding ${r.receding}`);
+  }
+});

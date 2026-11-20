@@ -84,7 +84,15 @@ export async function posterSource() {
     const family = { stripes: 'line', grid: 'lattice', hexdots: 'lattice', rings: 'radial', rays: 'radial', row: 'row' }[kind];
     if (!family) continue;
     const b = boundsOf(el, g, ctx);
-    figs.push({ id: el.id, family, poly: [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]] });
+    const fig = { id: el.id, family, poly: [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]] };
+    if (el.type === 'row') {
+      // where each thing of the row stands (its centre)
+      const xs = [el.x];
+      for (const gp of el.gaps) xs.push(xs[xs.length - 1] + gp * ctx.unit);
+      const h = (el.motif === 'bottle' ? 132 : el.h) * el.size;
+      fig.things = xs.map((x) => [x, el.y - h / 2]);
+    }
+    figs.push(fig);
   }
   return { name: 'poster', mip: mipmaps(g.getImageData(0, 0, cv.width, cv.height)), w: cv.width, h: cv.height, figs };
 }
@@ -309,7 +317,7 @@ async function runSequence(src, seed, frames, out, trackerOpt, det, plane) {
     const rgba = renderFrame(src, Hs[f], noise);
     const grey = greyOf(rgba, AW, AH);
     if (f % ANALYSIS_EVERY === 0) analysis = { at: f + LATENCY, res: det.analyze(rgba, AW, AH), frame: f };
-    const figsNow = src.figs.map((g) => ({ ...g, img: g.poly.map(([x, y]) => applyH(Hs[f], x, y)) }));
+    const figsNow = src.figs.map((g) => ({ ...g, H: Hs[f], img: g.poly.map(([x, y]) => applyH(Hs[f], x, y)) }));
     if (analysis && analysis.frame === f) measurePlanes(analysis.res, Hs.normals[f], figsNow, plane);
     const trueStep = f ? mulH(Hs[f], invH(Hs[f - 1])) : null;
     for (const V of variants) {
@@ -460,6 +468,40 @@ function measurePlanes(res, nTrue, figs, P) {
       }
     }
   }
+  // the row's rhythm: positions of its things along it (0…1) vs the printed ones
+  for (const r of res.regions) {
+    if (r.type !== 'ROW') continue;
+    for (const g of figs) {
+      if (!g.things) continue;
+      const vis = clip(g.img, VIEW);
+      if (vis.length < 3) continue;
+      const box = [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
+      if (iou(box, vis) < 0.2) continue;
+      const ms = [...r.members].sort((a, b) => a.t - b.t);
+      if (ms.length < 3) continue;
+      const tImg = g.things.map((p) => applyH(g.H, p[0], p[1]));
+      const idx = ms.map((m) => {
+        const cx = m.x + m.w / 2;
+        const cy = m.y + m.h / 2;
+        let bi = 0;
+        tImg.forEach((p, i) => {
+          if (Math.hypot(p[0] - cx, p[1] - cy) < Math.hypot(tImg[bi][0] - cx, tImg[bi][1] - cy)) bi = i;
+        });
+        return bi;
+      });
+      if (new Set(idx).size !== idx.length) continue;
+      const truth = idx.map((i) => g.things[i][0]);
+      const tn = (v, a, b) => (v - a) / (b - a);
+      const ang = (r.angle * Math.PI) / 180;
+      const ux = Math.cos(ang);
+      const uy = -Math.sin(ang);
+      const seen = ms.map((m) => (m.x + m.w / 2) * ux + (m.y + m.h / 2) * uy);
+      const errOf = (vals) => vals.reduce((acc, v, i) => acc + Math.abs(tn(v, vals[0], vals[vals.length - 1]) - tn(truth[i], truth[0], truth[truth.length - 1])), 0) / vals.length;
+      P.rowSeen.push(errOf(seen));
+      P.rowUsed.push(errOf(ms.map((m) => m.t)));
+      if (r.receding) P.rowReceding++;
+    }
+  }
   P.focal = res.focal;
 }
 
@@ -536,7 +578,8 @@ export async function run({ seqs = 6, frames = 150, photos = [], tracker = {}, d
   for (const src of sources) {
     const out = [0, 1].map(() => ({ slip: [], slipFast: [], slipDet: [], iou: [], held: 0, visible: 0, ids: [] }));
     const P = { regions: 0, tiltErr: [], falseTilt: 0, frontal: 0, tilted: 0, flatOnTilted: 0, fitBox: [], fitQuad: [],
-      grid: 0, gridSeen: 0, gridFlat: 0, gridTilted: 0, gridTiltedSeen: 0, gridTiltedFlat: 0, focal: 0 };
+      grid: 0, gridSeen: 0, gridFlat: 0, gridTilted: 0, gridTiltedSeen: 0, gridTiltedFlat: 0, focal: 0,
+      rowSeen: [], rowUsed: [], rowReceding: 0 };
     const n = src.name === 'poster' ? seqs : Math.max(1, seqs >> 1);
     for (let s = 0; s < n; s++) {
       await runSequence(src, 1000 + s * 17 + src.name.length, frames, out, tracker, det, P);
@@ -573,6 +616,10 @@ export async function run({ seqs = 6, frames = 150, photos = [], tracker = {}, d
       tiltedGrid34HeadOn: P.gridTilted ? +(P.gridTiltedFlat / P.gridTilted).toFixed(2) : null,
       gridRegions: P.grid,
       focal: +P.focal.toFixed(2),
+      rowPosErrSeen: P.rowSeen.length ? +mean(P.rowSeen).toFixed(3) : null,
+      rowPosErrUsed: P.rowUsed.length ? +mean(P.rowUsed).toFixed(3) : null,
+      rowDetections: P.rowSeen.length,
+      rowReceding: P.rowReceding,
     });
   }
   return { follow: report, planes, focalTrue: +(FOCAL / AW).toFixed(2) };
