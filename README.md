@@ -20,7 +20,12 @@
 | ポスターの紙面を編集 | `python3 tools/poster-editor/serve.py` | http://localhost:8010/tools/poster-editor/ （使い方は `tools/poster-editor/README.md`） |
 
 - カメラは **HTTPS か localhost** でしか使えない。`--https` は自己署名証明書を `.cert/` に作る（git 管理外）。iPhone では警告画面で「詳細を表示 → このWebサイトを閲覧」。
-- 安定した実機テスト・展示は **GitHub Pages** に置くのが確実（リポジトリ直下をそのまま公開すればよい）。
+- 安定した実機テスト・展示は **GitHub Pages**（https://trow16.github.io/ostinascope/）で。`main` にプッシュすると `.github/workflows/pages.yml` が自動で公開する：
+  1. テスト（`npm test`。処理速度のテストだけは GitHub のマシンでは測らない）。落ちたら公開しない
+  2. アプリに要るものだけ（`index.html`・`sw.js`・`src/`・`poster/`）を集め、コミットと時刻を `src/build.js` と `version.json` に書き込んで公開。開発用の `bench/`・`test/`・`tools/` は公開しない
+  - 進み具合はリポジトリの Actions タブ（Pages）。手動でも公開し直せる（Run workflow）
+  - リポジトリの Settings → Pages の Source は「GitHub Actions」のままにしておく
+  - 開始画面・設定パネルに `版：d3c8457（11/21 10:02 公開）` と出る（手元で動かしたときは「開発版」）。動いている版より新しい版が公開されていれば、更新ボタンが「新しい版があります — 更新」に変わる
 - **更新したのに古い版が動く問題**：GitHub Pages はファイルを 10 分間キャッシュさせるので、スマホでは新旧のファイルが混ざったり、再読み込みしても古いままだったりする（スーパーロードもできない）。`sw.js`（Service Worker）がこれを防ぐ：
   - このサイトのファイルは毎回サーバに確かめてから使う（変わっていなければ「変更なし」の短い返事だけなので速い）。ブラウザ側のキャッシュが古いファイルを使い回さないようにもしている
   - 最後に取れたものを取っておき、ネットにつながらないときはそれで開く（会場の回線が悪くても起動できる）
@@ -188,7 +193,9 @@ src/render.js       オーバーレイ描画
 src/sources.js      カメラ／デモ画像
 src/poster.js       ポスターの描画（要素の種類・項目・描き方）
 src/util.js         共通の小さな計算
-src/update.js       最新版の取得（Service Worker の登録・版の表示・「最新版に更新」）
+src/update.js       最新版の取得（Service Worker の登録・版の表示・新しい版の知らせ・「最新版に更新」）
+src/build.js        版（公開時にワークフローがコミットと時刻を書き込む。手元では null）
+.github/workflows/pages.yml  テストして GitHub Pages に公開
 sw.js               Service Worker（毎回サーバに確かめる・オフラインでも開く）
 poster/poster.json  ポスターの紙面データ（配色と要素の並び）
 tools/poster-editor/ ポスター編集ツール（アプリからは独立。消してもアプリは動く）

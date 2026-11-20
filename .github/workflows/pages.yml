@@ -1,0 +1,56 @@
+# Publish the app on GitHub Pages: test, then deploy only what the app
+# needs, stamped with the commit it was built from (src/build.js and
+# version.json — the app shows it, and offers to update when a newer one
+# is out). Runs on every push to main, or by hand (Actions → Pages → Run).
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deployment at a time; a newer push waits for the running one
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble the site (the app only)
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir -p _site
+          cp -r index.html sw.js src poster _site/
+          commit="${SHA::7}"
+          time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf "// written by .github/workflows/pages.yml\nexport const BUILD = { commit: '%s', time: '%s' };\n" "$commit" "$time" > _site/src/build.js
+          printf '{"commit":"%s","time":"%s"}\n' "$commit" "$time" > _site/version.json
+          find _site -type f | sort
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

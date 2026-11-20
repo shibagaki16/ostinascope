@@ -11,7 +11,7 @@ import { specFor, levelFor, panFor, fadeBarsFor } from './mapping.js';
 import { createRenderer } from './render.js';
 import { openCamera, createDemoSource } from './sources.js';
 import { drawPoster, loadPoster } from './poster.js';
-import { registerUpdates, serverVersion, formatVersion, refreshApp } from './update.js';
+import { registerUpdates, serverVersion, formatVersion, refreshApp, runningBuild, publishedBuild, formatBuild } from './update.js';
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);
@@ -514,9 +514,23 @@ $('#save-poster').addEventListener('click', async () => {
 // and a button that fetches everything again
 
 registerUpdates(() => state.running);
-serverVersion().then((d) => {
-  for (const el of document.querySelectorAll('.version-text')) el.textContent = formatVersion(d);
-});
+const showVersion = (text) => {
+  for (const el of document.querySelectorAll('.version-text')) el.textContent = text;
+};
+if (runningBuild) {
+  // published: the commit it was built from; and is a newer one out?
+  showVersion(formatBuild(runningBuild));
+  publishedBuild().then((latest) => {
+    if (!latest || latest === 'offline' || latest.commit === runningBuild.commit) return;
+    for (const btn of document.querySelectorAll('.refresh-app')) {
+      btn.textContent = `新しい版があります（${latest.commit}）— 更新`;
+      btn.classList.add('attention');
+    }
+  });
+} else {
+  // a local copy: when its files were last changed
+  serverVersion().then((d) => showVersion(`${formatVersion(d)}（開発版）`));
+}
 for (const btn of document.querySelectorAll('.refresh-app')) {
   btn.addEventListener('click', async () => {
     btn.disabled = true;

@@ -1,6 +1,32 @@
 // Ostinascope — staying up to date on a phone (see sw.js): registers the
-// service worker, shows which version is running, and can force a fresh copy
-// of everything.
+// service worker, shows which version is running, notices when a newer one
+// has been published, and can force a fresh copy of everything.
+
+import { BUILD } from './build.js';
+
+/** The version running: { commit, time } from the deploy, or null locally. */
+export const runningBuild = BUILD;
+
+/**
+ * The version published now (version.json, written by the deploy): an
+ * object, null when there is none (local), or 'offline'.
+ */
+export async function publishedBuild() {
+  try {
+    const res = await fetch(new URL('../version.json', import.meta.url), { cache: 'no-store' });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return 'offline';
+  }
+}
+
+/** "版：d3c8457（11/21 10:02 公開）" for a build. */
+export function formatBuild(b) {
+  const d = new Date(b.time);
+  const p = (n) => String(n).padStart(2, '0');
+  const when = Number.isNaN(d.getTime()) ? '' : `（${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())} 公開）`;
+  return `版：${b.commit}${when}`;
+}
 
 /**
  * Register the service worker. On the very first visit with it, the page

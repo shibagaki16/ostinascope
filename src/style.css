@@ -173,6 +173,11 @@ button {
   font-size: inherit;
   text-decoration: underline;
 }
+.refresh-app.attention {
+  color: var(--red);
+  font-weight: 700;
+}
+.version:has(.attention) { opacity: 1; }
 
 /* ---- settings ------------------------------------------------------- */
 
