@@ -3,14 +3,14 @@
 # that a pattern's rough box can be written as a cell range like "A2:C5".
 # The grid is the one in labels.json ("grid": portrait 4 × 8, landscape
 # 6 × 4 cells).
-# usage: python3 -I bench/labelsheet.py <label> <out.png> [all]
+# usage: python3 -I bench/labelsheet.py <label> <out.png> [all|rest]
 #   default: views p0, p2, p4, l1, l3 of each photo (the labelled subset);
-#   all: every view of the label
+#   all: every view of the label; rest: the views not in the subset
 import json, sys
 from PIL import Image, ImageDraw
 
 label, outp = sys.argv[1], sys.argv[2]
-every = len(sys.argv) > 3 and sys.argv[3] == "all"
+mode = sys.argv[3] if len(sys.argv) > 3 else ""
 SUBSET = ("p0", "p2", "p4", "l1", "l3")
 GRID = json.load(open("bench/labels.json"))["grid"]
 
@@ -21,7 +21,7 @@ for d in ("views", "nviews"):
     except FileNotFoundError:
         continue
     for v in idx:
-        if v["label"] == label and (every or v["view"].split("-")[-1] in SUBSET):
+        if v["label"] == label and (mode == "all" or (v["view"].split("-")[-1] in SUBSET) != (mode == "rest")):
             views.append((d, v))
 if not views:
     sys.exit(f"no views for {label}")
@@ -29,7 +29,6 @@ if not views:
 
 def tile(d, v):
     im = Image.open(f"bench/data/{d}/{v['view']}.png").convert("RGB")
-    sc = im.width / v["w"]
     cols, rows = GRID["portrait" if v["h"] > v["w"] else "landscape"]
     dr = ImageDraw.Draw(im)
     for c in range(1, cols):
@@ -47,7 +46,6 @@ def tile(d, v):
     out = Image.new("RGB", (im.width, im.height + 14), (0, 0, 0))
     out.paste(im, (0, 14))
     ImageDraw.Draw(out).text((2, 1), f"{d}/{v['view']}", fill=(255, 255, 255))
-    del sc
     return out
 
 
