@@ -169,3 +169,43 @@ export const plankBoard = (p) => (x, y) => {
   const v = Math.max(0, base + grain);
   return [v * 0.8, v * 0.55, v * 0.35];
 };
+
+// Tree rings: each ring its own width (0.6–1.4 × p) and tint, a dark thin
+// latewood line at its outer edge, over a fine grain. wobble: the rings are
+// lobed, not round (radius × 1 ± wobble); faint: how dark the latewood is.
+export const treeRings = (cx, cy, p, seed = 5, wobble = 0, faint = 0.55, grainK = 0.06) => {
+  const rnd = mulberry32(seed);
+  const ph = [rnd() * 6.3, rnd() * 6.3];
+  const radii = [0];
+  const tint = [1];
+  while (radii[radii.length - 1] < 900) {
+    radii.push(radii[radii.length - 1] + p * (0.6 + 0.8 * rnd()));
+    tint.push(0.85 + 0.25 * rnd());
+  }
+  return (x, y) => {
+    const a = Math.atan2(y - cy, x - cx);
+    const d = Math.hypot(x - cx, y - cy) * (1 + wobble * (0.6 * Math.sin(3 * a + ph[0]) + 0.4 * Math.sin(5 * a + ph[1])));
+    let lo = 0, hi = radii.length - 1;
+    while (hi - lo > 1) {
+      const m = (lo + hi) >> 1;
+      if (radii[m] <= d) lo = m; else hi = m;
+    }
+    const t = (d - radii[lo]) / (radii[lo + 1] - radii[lo]);
+    const late = t > 0.72 ? faint : 1;
+    const grain = 1 - grainK + grainK * cellRandom(Math.floor(x / 2), Math.floor(y / 2), 13);
+    const v = Math.min(1, tint[lo] * late * grain);
+    return [0.82 * v, 0.6 * v, 0.38 * v];
+  };
+};
+
+// One round blob with a soft rim (a drop, a ball out of focus).
+export const softBlob = (cx, cy, r, soft) => (x, y) => {
+  const v = 0.25 + 0.6 / (1 + Math.exp((Math.hypot(x - cx, y - cy) - r) / soft));
+  return [v, 0.8 * v, 0.75 * v];
+};
+
+// Straight stripes in a rectangle on a plain ground (a crossing on asphalt).
+export const stripesInRect = (period, x0, y0, x1, y1) => (x, y) => {
+  if (x < x0 || x > x1 || y < y0 || y > y1) return [0.3, 0.3, 0.32];
+  return frac(y / period) < 0.5 ? [0.92, 0.92, 0.9] : [0.3, 0.3, 0.32];
+};

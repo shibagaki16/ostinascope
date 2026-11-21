@@ -17,6 +17,7 @@
 
 import { makePowerSpectrum } from './fft.js';
 import { createRowFinder } from './rows.js';
+import { createCenterFinder } from './centers.js';
 import { regionColor } from './color.js';
 import { fitPerspective, frequencyOf, planeFromLine, quadShape, rectifyFrequency, PLANE_DEFAULTS } from './plane.js';
 import { applyH } from './homography.js';
@@ -77,6 +78,10 @@ export const DETECTOR_DEFAULTS = Object.freeze({
   softCells: 3, // extra cells a region needs when most pass only by the sensitivity
   grow: true, // regions take in agreeing near-miss neighbours (extent only)
   rings: true,
+  // concentric rings / radial rays also from every pixel's orientation
+  // (centers.js): uneven tree rings, petals, rings centred off the frame
+  centers: true,
+  centerOptions: {},
   ringCells: 7,
   // rings/rays: how far (≈ sin of the angle) a cell's line may miss the
   // centre before it is dropped from the fit, and the mean miss allowed
@@ -129,6 +134,7 @@ export function createDetector(options = {}) {
   };
   const power = makePowerSpectrum(N);
   const rowFinder = createRowFinder(options.rowOptions || {});
+  const centerFinder = createCenterFinder(options.centerOptions || {});
   const work = new Float64Array(NN);
   const P = new Float64Array(NN);
   const mask = new Uint8Array(NN);
@@ -627,6 +633,9 @@ export function createDetector(options = {}) {
       const lv = { level: L, scale: sc, cols, rows, size: N * sc, step: S * sc, cells };
       levels.push(lv);
       regions.push(...buildRegions(lv));
+    }
+    if (opt.centers && dims[1]) {
+      regions.push(...centerFinder.find(pyramid[1], dims[1][0], dims[1][1], opt.levels[1].scale || 2, regions));
     }
 
     let kept = dedupe(absorbRings(absorbRims(regions)));

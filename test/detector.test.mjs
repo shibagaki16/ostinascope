@@ -117,6 +117,23 @@ test('radial rays → RADIAL', () => {
   assert.ok(Math.hypot(r.center.x - 96, r.center.y - 210) < 24, `centre ${JSON.stringify(r.center)}`);
 });
 
+// Rings from every pixel's orientation (centers.js): lobed, faint tree
+// rings with uneven widths make no clean stripe in a cell, so the cells
+// alone miss them — also with the centre off the frame. A single soft blob
+// and straight stripes in a box must not read as rings or rays.
+for (const [cx, cy, p, seed] of [[96, 200, 9, 5], [96, 220, 12, 9], [-60, 190, 10, 3]]) {
+  test(`lobed, faint tree rings (centre ${cx},${cy}, p≈${p}) → CONCENTRIC`, () => {
+    const res = run(S.treeRings(cx, cy, p, seed, 0.15, 0.75, 0.15), { ss: 2 });
+    assert.ok(res.regions.some((r) => r.type === TYPE.CONCENTRIC), describe(res));
+  });
+}
+test('a soft blob, stripes in a box → no rings or rays', () => {
+  for (const f of [S.softBlob(96, 200, 60, 6), S.softBlob(96, 200, 90, 12), S.stripesInRect(30, 20, 80, 172, 330), S.stripesInRect(44, 20, 80, 172, 330)]) {
+    const res = run(f, { ss: 2 });
+    assert.ok(!res.regions.some((r) => r.family === 'radial'), describe(res));
+  }
+});
+
 // Lattices of things (rows.js 6.): bricks and tiles that each have their
 // own colour give the spectral detector stripes at best; each brick still
 // looks like the next. A plank board is stripes only: along a plank the
