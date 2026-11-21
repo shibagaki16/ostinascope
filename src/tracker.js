@@ -327,8 +327,8 @@ export function createTracker(options = {}) {
         if (t - tr.lastSeen > opt.lostGraceMs) {
           tr.state = 'fading';
           tr.fadeStart = t;
+          tr.exit = exitOf(tr, view); // first: how long the fade is may depend on it
           tr.fadeMs = fadeMsFor(tr);
-          tr.exit = exitOf(tr, view);
         }
       } else if (tr.state === 'fading') {
         if (t - tr.fadeStart > tr.fadeMs) return;

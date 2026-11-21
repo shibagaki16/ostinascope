@@ -271,4 +271,8 @@ export function panFor(t, view) {
   return clamp(0.7 * x, -0.9, 0.9);
 }
 
-export const fadeBarsFor = (t) => (t.family === 'line' ? 1 : 2);
+// How long a lost pattern's loop fades (bars). Lost in place, it may only
+// have flickered: 1–2 bars, so a dropout is not heard. Gone out through
+// the frame's edge, it is not coming back soon: a quarter of a bar, so
+// the loops of patterns panned past do not pile up.
+export const fadeBarsFor = (t) => (t.exit && t.exit.kind === 'edge' ? 0.25 : t.family === 'line' ? 1 : 2);

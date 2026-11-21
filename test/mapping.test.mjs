@@ -70,3 +70,11 @@ test('a row plays one hit per thing, where it sits along the row', () => {
   assert.equal(row([0, 1, 2, 3]).sig, even.sig);
   assert.notEqual(uneven.sig, even.sig);
 });
+
+test('a loop whose pattern went out through the edge fades fast; one lost in place slowly', () => {
+  assert.equal(M.fadeBarsFor({ family: 'line', exit: { kind: 'edge' } }), 0.25);
+  assert.equal(M.fadeBarsFor({ family: 'lattice', exit: { kind: 'edge' } }), 0.25);
+  assert.equal(M.fadeBarsFor({ family: 'line', exit: { kind: 'vanish' } }), 1);
+  assert.equal(M.fadeBarsFor({ family: 'lattice', exit: { kind: 'vanish' } }), 2);
+  assert.equal(M.fadeBarsFor({ family: 'radial' }), 2);
+});

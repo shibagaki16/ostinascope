@@ -83,3 +83,16 @@ test('zooming in (period growing smoothly) keeps the same track', () => {
     assert.equal(tr.id, id);
   }
 });
+
+test('the fade length is chosen knowing how the pattern left (edge or in place)', () => {
+  const tk = createTracker();
+  let t = 0;
+  let x = 0.4;
+  for (let i = 0; i < 8; i++, t += 100, x += 0.06) tk.update([det(x, 1)], t, view);
+  const fade = (tr) => (tr.exit && tr.exit.kind === 'edge' ? 300 : 3000);
+  for (let i = 0; i < 4; i++, t += 100) tk.update([], t, view, fade);
+  assert.equal(tk.tracks[0].state, 'fading');
+  assert.equal(tk.tracks[0].fadeMs, 300, 'gone out through the edge: the short fade');
+  for (let i = 0; i < 5; i++, t += 100) tk.update([], t, view, fade);
+  assert.equal(tk.tracks.length, 0);
+});
