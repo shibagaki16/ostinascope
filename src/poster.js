@@ -9,7 +9,7 @@
 // Coordinates are design px (1800 × 2546, A-series ratio); `scale` renders
 // larger, e.g. 2 for a print test sheet. Colours are palette names or CSS.
 
-import { mod, TO_RAD } from './util.js';
+import { mod, rng, TO_RAD } from './util.js';
 import { qrCode } from './qr.js';
 
 export const POSTER_URL = new URL('../poster/poster.json', import.meta.url).href;
@@ -82,17 +82,6 @@ export function createElement(type, x, y) {
 function moveXY(el, dx, dy) {
   el.x += dx;
   el.y += dy;
-}
-
-export function rng(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 const box = (x0, y0, x1, y1) => ({ x0, y0, x1, y1 });

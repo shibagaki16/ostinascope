@@ -24,11 +24,12 @@
 
 import { drawPoster, loadPoster, boundsOf, context } from '../src/poster.js';
 import { createDetector, familyOf } from '../src/detector.js';
-import { createTracker } from '../src/tracker.js';
+import { createTracker, toViewUnits } from '../src/tracker.js';
 import { greyOf } from '../src/motion.js';
 import { createFollower } from '../src/follow.js';
 import { applyH, invH, mulH } from '../src/homography.js';
 import { simpleRatio } from '../src/mapping.js';
+import { rng } from '../src/util.js';
 
 export const AW = 192;
 export const AH = 416;
@@ -37,16 +38,7 @@ export const FPS = 30;
 export const ANALYSIS_EVERY = 3; // 10 Hz
 export const LATENCY = 2; // frames until a result is back
 
-export function rng(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+export { rng };
 
 // ---------------------------------------------------------------- sources
 
@@ -275,8 +267,6 @@ export function iou(a, b) {
 
 // ---------------------------------------------------------------- run
 
-const fam = (t) => familyOf(t);
-
 function makeVariant(useMotion, trackerOpt) {
   return {
     useMotion,
@@ -303,14 +293,7 @@ async function runSequence(src, seed, frames, out, trackerOpt, det, plane) {
   const variants = [makeVariant(false), makeVariant(true, trackerOpt)];
   const unit = Math.min(AW, AH);
   const view = { w: AW / unit, h: AH / unit };
-  const toV = (r) => ({
-    ...r, cx: r.cx / unit, cy: r.cy / unit, w: r.w / unit, h: r.h / unit, period: r.period / unit,
-    period2: r.period2 ? r.period2 / unit : undefined,
-    center: r.center ? { x: r.center.x / unit, y: r.center.y / unit } : null,
-    quad: r.quad ? r.quad.map(([x, y]) => [x / unit, y / unit]) : undefined,
-    size: r.size ? r.size / unit : undefined,
-    members: r.members ? r.members.map((m) => ({ ...m, x: m.x / unit, y: m.y / unit, w: m.w / unit, h: m.h / unit, t: m.t / unit })) : undefined,
-  });
+  const toV = (r) => toViewUnits(r, unit);
   let analysis = null;
   for (let f = 0; f < frames; f++) {
     const t = (f * 1000) / FPS;
@@ -381,7 +364,7 @@ async function runSequence(src, seed, frames, out, trackerOpt, det, plane) {
       for (const g of figsNow) {
         if (area(clip(g.img, VIEW)) < 0.95 * area(g.img)) continue;
         V.visible++;
-        const on = V.tracker.tracks.some((tr) => tr.state === 'active' && fam(tr.type) === g.family &&
+        const on = V.tracker.tracks.some((tr) => tr.state === 'active' && familyOf(tr.type) === g.family &&
           iou(tr.quad.map(([x, y]) => [x * unit, y * unit]), g.img) > 0.15);
         if (on) V.held++;
       }

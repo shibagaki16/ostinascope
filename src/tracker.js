@@ -13,6 +13,28 @@
 import { angleDiff, lerp, TO_DEG as DEG } from './util.js';
 import { applyH, localScale } from './homography.js';
 
+/**
+ * A detector region (analysis px) in view units, where `unit` px is 1 —
+ * what tracks are kept in, so they do not depend on the analysis size.
+ */
+export function toViewUnits(r, unit) {
+  return {
+    ...r,
+    cx: r.cx / unit,
+    cy: r.cy / unit,
+    w: r.w / unit,
+    h: r.h / unit,
+    period: r.period / unit,
+    period2: r.period2 ? r.period2 / unit : undefined,
+    center: r.center ? { x: r.center.x / unit, y: r.center.y / unit } : null,
+    quad: r.quad ? r.quad.map(([x, y]) => [x / unit, y / unit]) : undefined,
+    size: r.size ? r.size / unit : undefined,
+    members: r.members
+      ? r.members.map((m) => ({ ...m, x: m.x / unit, y: m.y / unit, w: m.w / unit, h: m.h / unit, t: m.t / unit }))
+      : undefined,
+  };
+}
+
 /** The four corners of a region's box (clockwise from top-left). */
 export function boxQuad(r) {
   const x0 = r.cx - r.w / 2;

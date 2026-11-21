@@ -21,6 +21,7 @@
 // Pure module (no DOM): runs in the page, a worker or Node.
 
 import { applyH, fitH, IDENTITY, mulH } from './homography.js';
+import { rng } from './util.js';
 
 export const MOTION_DEFAULTS = Object.freeze({
   levels: 3, // pyramid levels (192 → 96 → 48 px)
@@ -52,17 +53,6 @@ export const MOTION_DEFAULTS = Object.freeze({
   maxStrikes: 3, // frames in a row a corner may fit no surface before it is dropped
   maxScaleStep: 1.25, // per frame: zoom more than this is not believed
 });
-
-function rng(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /** RGBA bytes → grey 0..1 (Rec. 601 luma), into `out` when it fits. */
 export function greyOf(rgba, w, h, out) {

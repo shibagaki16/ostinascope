@@ -138,11 +138,3 @@ export function fitH(ax, ay, bx, by, idx) {
   const TbInv = [1 / nb.s, 0, nb.mx, 0, 1 / nb.s, nb.my, 0, 0, 1];
   return mulH(TbInv, mulH(Hn, Ta));
 }
-
-/** Squared transfer error of point i under H. */
-export function err2(H, ax, ay, bx, by, i) {
-  const [u, v] = applyH(H, ax[i], ay[i]);
-  const dx = u - bx[i];
-  const dy = v - by[i];
-  return dx * dx + dy * dy;
-}

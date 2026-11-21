@@ -6,8 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 
 const [,, detPath, trPath, dir, dOpt] = process.argv;
-const { createDetector } = await import(pathToFileURL(resolve(detPath)).href);
-const { createTracker } = await import(pathToFileURL(resolve(trPath)).href);
+const { createDetector, familyOf: fam } = await import(pathToFileURL(resolve(detPath)).href);
+const { createTracker, toViewUnits } = await import(pathToFileURL(resolve(trPath)).href);
 const index = JSON.parse(readFileSync(`${dir}/index.json`, 'utf8'));
 const seqs = new Map();
 for (const v of index) {
@@ -15,7 +15,6 @@ for (const v of index) {
   seqs.get(v.seq)[v.frame] = v;
 }
 const det = createDetector(dOpt ? JSON.parse(dOpt) : {});
-const fam = (t) => (t === 'STRIPE' ? 'line' : t === 'GRID' || t === 'DOTS' ? 'lattice' : t === 'ROW' ? 'row' : 'radial');
 const stat = {};
 let noise = 0, frames = 0, ms = 0;
 const noiseKinds = {};
@@ -31,11 +30,7 @@ for (const [, fr] of seqs) {
     const res = det.analyze(new Uint8ClampedArray(buf.buffer, buf.byteOffset, buf.length), v.w, v.h);
     ms += res.ms;
     frames++;
-    const n = (x) => x / unit;
-    const dets = res.regions.map((r) => ({ ...r, cx: n(r.cx), cy: n(r.cy), w: n(r.w), h: n(r.h), period: n(r.period),
-      period2: r.period2 ? n(r.period2) : undefined, center: r.center ? { x: n(r.center.x), y: n(r.center.y) } : null,
-      quad: r.quad ? r.quad.map(([x, y]) => [n(x), n(y)]) : undefined }));
-    tracker.update(dets, f * 100, view, () => 1200);
+    tracker.update(res.regions.map((r) => toViewUnits(r, unit)), f * 100, view, () => 1200);
     for (const tr of tracker.tracks) {
       if (tr.state !== 'active') continue;
       const b = [(tr.cx - tr.w / 2) * unit, (tr.cy - tr.h / 2) * unit, (tr.cx + tr.w / 2) * unit, (tr.cy + tr.h / 2) * unit];

@@ -43,7 +43,7 @@
 //
 // Pure module (no DOM).
 
-import { clamp, TO_DEG as DEG } from './util.js';
+import { clamp, overlapShare, TO_DEG as DEG } from './util.js';
 
 const NB = 6; // edge direction bins (0–180°)
 const ND = 9 * NB + 9; // descriptor length
@@ -130,6 +130,34 @@ function loosen(o, sens) {
     minSim3: 1 - (1 - o.minSim3) * r, // 0.86 → 0.84
     maxUneven: o.maxUneven * r,
   };
+}
+
+// The best match in the 3×3 blocks around block (x, y).
+function bestAround(simAt, nx, ny, x, y) {
+  let m = -1;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx;
+      const yy = y + dy;
+      if (xx >= 0 && yy >= 0 && xx < nx && yy < ny) m = Math.max(m, simAt(xx, yy));
+    }
+  }
+  return m;
+}
+
+// Least squares of w against t: the means and the sums for the slope
+// (slope = sxy / sxx, when sxx > 0).
+function lineFit(ts, ws) {
+  const n = ts.length;
+  const mt = ts.reduce((p, q) => p + q, 0) / n;
+  const mw = ws.reduce((p, q) => p + q, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  for (let i = 0; i < n; i++) {
+    sxy += (ts[i] - mt) * (ws[i] - mw);
+    sxx += (ts[i] - mt) ** 2;
+  }
+  return { mt, mw, sxy, sxx };
 }
 
 export function createRowFinder(options = {}) {
@@ -253,21 +281,25 @@ export function createRowFinder(options = {}) {
         lbuf[k] = rect(W1, x0, y0, x1, y1, NB) / Math.max(1, (x1 - x0) * (y1 - y0));
       }
     }
+    finishDesc(desc, o, h2);
+  }
+
+  // Finish a descriptor at d[o…] whose histograms hold squared length h2:
+  // the histograms to unit length, the 3×3 light/dark layout (lbuf)
+  // centred at half weight, then the whole to unit length.
+  function finishDesc(d, o, h2) {
     const hn = 1 / Math.sqrt(h2 + 1e-9);
-    for (let j = 0; j < 9 * NB; j++) desc[o + j] *= hn;
+    for (let j = 0; j < 9 * NB; j++) d[o + j] *= hn;
     let lm = 0;
     for (let k = 0; k < 9; k++) lm += lbuf[k] / 9;
     let lv = 0;
     for (let k = 0; k < 9; k++) lv += (lbuf[k] - lm) ** 2;
     const ln = 0.5 / Math.sqrt(lv + 0.002); // light/dark layout counts half
+    for (let k = 0; k < 9; k++) d[o + 9 * NB + k] = (lbuf[k] - lm) * ln;
     let t = 0;
-    for (let k = 0; k < 9; k++) {
-      const v = (lbuf[k] - lm) * ln;
-      desc[o + 9 * NB + k] = v;
-    }
-    for (let j = 0; j < ND; j++) t += desc[o + j] * desc[o + j];
+    for (let j = 0; j < ND; j++) t += d[o + j] * d[o + j];
     const tn = 1 / Math.sqrt(t + 1e-12);
-    for (let j = 0; j < ND; j++) desc[o + j] *= tn;
+    for (let j = 0; j < ND; j++) d[o + j] *= tn;
   }
 
   // Integral image at fractional block coordinates (bilinear: as if each
@@ -321,18 +353,7 @@ export function createRowFinder(options = {}) {
         lbuf[k] = (grid16[d + NB] - grid16[b + NB] - grid16[c2 + NB] + grid16[a + NB]) / Math.max(1e-6, area);
       }
     }
-    const hn = 1 / Math.sqrt(h2 + 1e-9);
-    for (let j = 0; j < 9 * NB; j++) out[j] *= hn;
-    let lm = 0;
-    for (let k = 0; k < 9; k++) lm += lbuf[k] / 9;
-    let lv = 0;
-    for (let k = 0; k < 9; k++) lv += (lbuf[k] - lm) ** 2;
-    const ln = 0.5 / Math.sqrt(lv + 0.002);
-    for (let k = 0; k < 9; k++) out[9 * NB + k] = (lbuf[k] - lm) * ln;
-    let t = 0;
-    for (let j = 0; j < ND; j++) t += out[j] * out[j];
-    const tn = 1 / Math.sqrt(t + 1e-12);
-    for (let j = 0; j < ND; j++) out[j] *= tn;
+    finishDesc(out, 0, h2);
     return true;
   }
   const dtmp = new Float32Array(ND);
@@ -432,14 +453,7 @@ export function createRowFinder(options = {}) {
     const rho = 1 - (6 * d2) / (n * (n * n - 1));
     if (!o.provisional && Math.abs(rho) < o.minSizeOrder) return null;
     // w = a t + b
-    const mt = ts.reduce((p, q) => p + q, 0) / n;
-    const mw = ws.reduce((p, q) => p + q, 0) / n;
-    let sxy = 0;
-    let sxx = 0;
-    for (let i = 0; i < n; i++) {
-      sxy += (ts[i] - mt) * (ws[i] - mw);
-      sxx += (ts[i] - mt) ** 2;
-    }
+    const { mt, mw, sxy, sxx } = lineFit(ts, ws);
     if (!(sxx > 0)) return null;
     const a = sxy / sxx;
     const b = mw - a * mt;
@@ -530,14 +544,7 @@ export function createRowFinder(options = {}) {
     const pc = Math.max(depth, 1 / depth);
     if (pc < o.minEvenDepth) return o.onReason && o.onReason('too little depth'), null;
     // measured size change, from a line through the sizes
-    const mt = ts.reduce((p, q) => p + q, 0) / n;
-    const mw = ws.reduce((p, q) => p + q, 0) / n;
-    let sxy = 0;
-    let sxx = 0;
-    for (let k = 0; k < n; k++) {
-      sxy += (ts[k] - mt) * (ws[k] - mw);
-      sxx += (ts[k] - mt) ** 2;
-    }
+    const { mt, mw, sxy, sxx } = lineFit(ts, ws);
     const sl = sxx > 0 ? sxy / sxx : 0;
     const w0 = mw + sl * (ts[0] - mt);
     const w1 = mw + sl * (ts[n - 1] - mt);
@@ -693,9 +700,6 @@ export function createRowFinder(options = {}) {
       let P = fit(row);
       // the sizes alone are not sure: an evenly spaced row, read from its gaps
       if (!P) return recedeEven(row, s, need, line, u, why);
-      // three things: too few to judge, but enough to look for a fourth
-      if (!P && row.length === 3) P = perspectivePositions(row.map((p) => u({ x: p.x, y: p.y })), row.map((p) => p.size), { ...opt, provisional: true });
-      if (!P) return null;
       // grow at both ends while the model finds the next thing
       for (const end of [1, -1]) {
         for (let tries = 0; tries < 6 && row.length < opt.maxCount; tries++) {
@@ -732,9 +736,7 @@ export function createRowFinder(options = {}) {
           P = P2;
         }
       }
-      // a provisional model must have grown into a row that stands on its own
-      if (row.length < 4 || !fit(row)) return null;
-      P = fit(row);
+      // P is the fit of the row as grown (each step kept only when it fits)
       return { row: row.map((p, i) => ({ ...p, size: P.sizes[i] })), pos: P.pos, sizeChange: P.sizeChange, by: 'sizes' };
     }
     // 5b. An evenly spaced receding row (evenPerspective): grow it at both
@@ -916,16 +918,7 @@ export function createRowFinder(options = {}) {
         const dip = (a, b, depth = opt.minDip) => {
           // best match anywhere near the midpoint (thin lines are touchy
           // about a block's offset)
-          const mx = Math.round((a.x + b.x) / 2);
-          const my = Math.round((a.y + b.y) / 2);
-          let m = -1;
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              const x = mx + dx;
-              const y = my + dy;
-              if (x >= 0 && y >= 0 && x < nx && y < ny) m = Math.max(m, simAt(x, y));
-            }
-          }
+          const m = bestAround(simAt, nx, ny, Math.round((a.x + b.x) / 2), Math.round((a.y + b.y) / 2));
           return m < Math.min(a.sim, b.sim) - depth && m < need - 0.05;
         };
         const runs = [[row[0]]];
@@ -1153,19 +1146,7 @@ export function createRowFinder(options = {}) {
     const span = Math.min(new Set(on.map((q) => q.i)).size, new Set(on.map((q) => q.j)).size);
     if (span < L.minSpan || (span <= 2 && on.length < L.span2Points)) return null;
     // halfway between neighbours, in both directions, something else
-    const midSim = (u, v) => {
-      const mx = Math.round((u.x + v.x) / 2);
-      const my = Math.round((u.y + v.y) / 2);
-      let m = -1;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const x = mx + dx;
-          const y = my + dy;
-          if (x >= 0 && y >= 0 && x < nx && y < ny) m = Math.max(m, simAt(x, y));
-        }
-      }
-      return m;
-    };
+    const midSim = (u, v) => bestAround(simAt, nx, ny, Math.round((u.x + v.x) / 2), Math.round((u.y + v.y) / 2));
     const dips = (di, dj) => {
       let pairs = 0;
       let d = 0;
@@ -1232,14 +1213,9 @@ export function createRowFinder(options = {}) {
   // best of each, as detector regions (GRID: whether the things are blobs
   // or cells between lines is not told apart yet).
   function latticeRegions(lats) {
-    const overlap = (p, q) => {
-      const ix = Math.max(0, Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x));
-      const iy = Math.max(0, Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y));
-      return (ix * iy) / Math.min(p.w * p.h, q.w * q.h);
-    };
     const kept = [];
     for (const l of lats.slice().sort((p, q) => q.count + q.sim - (p.count + p.sim))) {
-      if (!kept.some((q) => overlap(q, l) > 0.5)) kept.push(l);
+      if (!kept.some((q) => overlapShare(q, l) > 0.5)) kept.push(l);
     }
     return kept.map((l) => {
       const [f1, f2] = l.fams;

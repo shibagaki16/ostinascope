@@ -5,11 +5,10 @@
 // usage: node bench/video.mjs <outDir> <video…> [--fps 10] [--short 192]
 //   writes <outDir>/s<NN>_f<MMM>.rgba / .png and index.json
 //   ({ view, seq, frame, w, h, file, gt: [] }; fill gt by hand or from labels)
-import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { createReadStream, statSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { createReadStream, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { openChrome, sleep } from './chrome.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => {
@@ -47,43 +46,10 @@ const server = createServer((req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-const port = 9300 + Math.floor(Math.random() * 600);
-const profile = mkdtempSync(`${tmpdir()}/chr`);
-const chrome = spawn('arch', ['-arm64', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '--headless=new',
-  `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--autoplay-policy=no-user-gesture-required', 'about:blank'],
-{ stdio: 'ignore' });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let targets;
-for (let i = 0; i < 100; i++) {
-  try {
-    targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    if (targets.length) break;
-  } catch {}
-  await sleep(200);
-}
-const ws = new WebSocket(targets.find((x) => x.type === 'page').webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r));
-let id = 0;
-const pend = new Map();
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pend.has(m.id)) {
-    pend.get(m.id)(m);
-    pend.delete(m.id);
-  }
-});
-const send = (method, params = {}) => new Promise((r) => {
-  const i = ++id;
-  pend.set(i, r);
-  ws.send(JSON.stringify({ id: i, method, params }));
-});
-const ev = async (expression) => {
-  const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (r.result.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400));
-  return r.result.result.value;
-};
-await send('Runtime.enable');
-await send('Page.navigate', { url: `${base}/` });
+const chrome = await openChrome({ flags: ['--autoplay-policy=no-user-gesture-required'] });
+const ev = chrome.evaluate;
+await chrome.send('Runtime.enable');
+await chrome.send('Page.navigate', { url: `${base}/` });
 await sleep(1000);
 
 const index = [];
@@ -133,7 +99,5 @@ for (let s = 0; s < files.length; s++) {
   console.log(`${name}: ${n} frames`);
 }
 writeFileSync(`${out}/index.json`, JSON.stringify(index));
-ws.close();
-chrome.kill();
+chrome.close();
 server.close();
-try { rmSync(profile, { recursive: true, force: true }); } catch {}

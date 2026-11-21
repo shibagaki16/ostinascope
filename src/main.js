@@ -3,7 +3,7 @@
 // (≈30 Hz) keeps every track on the surface it was found on.
 
 import { createAnalyzer } from './analysis.js';
-import { createTracker } from './tracker.js';
+import { createTracker, toViewUnits } from './tracker.js';
 import { greyOf } from './motion.js';
 import { createFollower } from './follow.js';
 import { AudioEngine } from './audio.js';
@@ -133,24 +133,6 @@ function grab() {
   return pctx.getImageData(0, 0, state.procW, state.procH);
 }
 
-function normalise(r, unit) {
-  return {
-    ...r,
-    cx: r.cx / unit,
-    cy: r.cy / unit,
-    w: r.w / unit,
-    h: r.h / unit,
-    period: r.period / unit,
-    period2: r.period2 ? r.period2 / unit : undefined,
-    center: r.center ? { x: r.center.x / unit, y: r.center.y / unit } : null,
-    quad: r.quad ? r.quad.map(([x, y]) => [x / unit, y / unit]) : undefined,
-    size: r.size ? r.size / unit : undefined,
-    members: r.members
-      ? r.members.map((m) => ({ ...m, x: m.x / unit, y: m.y / unit, w: m.w / unit, h: m.h / unit, t: m.t / unit }))
-      : undefined,
-  };
-}
-
 // One camera frame: how did the camera move since the last one? Every
 // track moves with the surface it is on, so outlines stay put between
 // analyses. Returns the frame's motion index (-1 when not following).
@@ -185,7 +167,7 @@ function analyze(now, img, k) {
     if (!res || procW !== state.procW || procH !== state.procH) return; // layout changed meanwhile
     const unit = Math.min(procW, procH);
     const viewN = { w: procW / unit, h: procH / unit };
-    let dets = res.regions.map((r) => normalise(r, unit));
+    let dets = res.regions.map((r) => toViewUnits(r, unit));
     let t = now;
     const placed = k >= 0 && state.follow ? follower.place(dets, k, unit) : null;
     if (placed) {

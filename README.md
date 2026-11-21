@@ -207,7 +207,7 @@ src/render.js       オーバーレイ描画
 src/sources.js      カメラ／デモ画像
 src/poster.js       ポスターの描画（要素の種類・項目・描き方）
 src/qr.js           QR コード（ポスターにアプリの URL を載せる。外部のライブラリなし）
-src/util.js         共通の小さな計算
+src/util.js         共通の小さな計算（角度・比・乱数・箱の重なり）
 src/update.js       最新版の取得（Service Worker の登録・版の表示・新しい版の知らせ・「最新版に更新」）
 src/build.js        版（公開時にワークフローがコミットと時刻を書き込む。手元では null）
 .github/workflows/pages.yml  テストして GitHub Pages に公開
@@ -245,6 +245,8 @@ node bench/page.mjs "http://127.0.0.1:8000/bench/follow.html?seqs=8&photos=zebra
 node bench/page.mjs "http://127.0.0.1:8000/bench/surfaces.html?seqs=6"   # 壁＋床の場面：面の分け方、面ごとの追従
 bench/sweep.sh '{}' '{"sensitivity":2}'                         # 設定違いを並べて比較
 ```
+
+ヘッドレスの Chrome を使うスクリプト（`page.mjs`・`browser.mjs`・`video.mjs`）は、起動と接続を `bench/chrome.mjs` にまとめてある。検出の枠を画面単位に直すのは、アプリと同じ `toViewUnits`（`src/tracker.js`）を使う（評価だけ直し忘れて測りまちがえることがないように）。
 
 写真の分類名（「レンガ」「柵」など）は、切り出したビューに本当にその模様が写っているかを表さない。`bench/labels.json` は、ビューを目で見て付けた正解（格子：写真ごとに 5 ビュー、23 分類の 435 ビュー。同心円・放射：年輪・花は全ビュー、ほかは写真ごとに 5 ビュー、10 分類の 225 ビュー）。写真そのものは入れず、ビューの名前とラベル用のマス目の範囲（`"A2:D7"`）だけを持つ。
 

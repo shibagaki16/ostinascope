@@ -17,7 +17,7 @@
 //
 // Pure module (no DOM).
 
-import { clamp } from './util.js';
+import { clamp, overlapShare } from './util.js';
 
 export const CENTER_DEFAULTS = Object.freeze({
   smooth: 3, // structure tensor window radius (px of the image given)
@@ -362,11 +362,7 @@ export function createCenterFinder(options = {}) {
         x: x0, y: y0, w: x1 - x0, h: y1 - y0,
       };
       if (reg.w < 8 || reg.h < 8) continue;
-      const same = (a) => {
-        const ix = Math.max(0, Math.min(a.x + a.w, reg.x + reg.w) - Math.max(a.x, reg.x));
-        const iy = Math.max(0, Math.min(a.y + a.h, reg.y + reg.h) - Math.max(a.y, reg.y));
-        return (ix * iy) / Math.min(a.w * a.h, reg.w * reg.h) > 0.5;
-      };
+      const same = (a) => overlapShare(a, reg) > 0.5;
       if (out.some(same) || known.some((a) => a.family === 'radial' && same(a))) continue;
       // grey contrast under the box
       let s = 0, s2 = 0, n = 0;

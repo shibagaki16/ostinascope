@@ -21,7 +21,7 @@ import { createCenterFinder } from './centers.js';
 import { regionColor } from './color.js';
 import { fitPerspective, frequencyOf, planeFromLine, quadShape, rectifyFrequency, PLANE_DEFAULTS } from './plane.js';
 import { applyH } from './homography.js';
-import { angleDiff, clamp, ratio, TO_DEG as DEG } from './util.js';
+import { angleDiff, clamp, overlapArea, overlapShare, ratio, TO_DEG as DEG } from './util.js';
 
 export { angleDiff }; // part of the detector's API (tests, tracker)
 
@@ -122,6 +122,52 @@ export const DETECTOR_DEFAULTS = Object.freeze({
 });
 
 const now = () => (globalThis.performance ? performance.now() : Date.now());
+
+// The box around cells' cores: { x0, y0, x1, y1 }.
+function cellsBox(cs) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of cs) {
+    x0 = Math.min(x0, c.cx - c.core / 2);
+    y0 = Math.min(y0, c.cy - c.core / 2);
+    x1 = Math.max(x1, c.cx + c.core / 2);
+    y1 = Math.max(y1, c.cy + c.core / 2);
+  }
+  return { x0, y0, x1, y1 };
+}
+
+// Grow region `host` to take in the box of region `r`.
+function absorbBox(host, r) {
+  const x1 = Math.max(host.x + host.w, r.x + r.w);
+  const y1 = Math.max(host.y + host.h, r.y + r.h);
+  host.x = Math.min(host.x, r.x);
+  host.y = Math.min(host.y, r.y);
+  host.w = x1 - host.x;
+  host.h = y1 - host.y;
+  host.cx = host.x + host.w / 2;
+  host.cy = host.y + host.h / 2;
+}
+
+// The cells next to cell i of a cols × rows grid, in the order of `steps`.
+const NB4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const NB8 = [...NB4, [1, 1], [1, -1], [-1, 1], [-1, -1]];
+function neighbours(i, cols, rows, steps = NB4) {
+  const x = i % cols;
+  const y = (i / cols) | 0;
+  const out = [];
+  for (const [dx, dy] of steps) {
+    const xx = x + dx;
+    const yy = y + dy;
+    if (xx >= 0 && yy >= 0 && xx < cols && yy < rows) out.push(yy * cols + xx);
+  }
+  return out;
+}
+
+// Unit direction of a cell's stripes at angle a (deg) — or, normal=true,
+// of the stripe normal (the way a ring's radius runs): [vx, vy].
+function lineDir(a, normal) {
+  const t = a / DEG;
+  return normal ? [Math.sin(t), Math.cos(t)] : [Math.cos(t), -Math.sin(t)];
+}
 
 export function createDetector(options = {}) {
   const opt = { ...DETECTOR_DEFAULTS, ...options };
@@ -815,21 +861,16 @@ export function createDetector(options = {}) {
     rowFrame++;
     rows = rowFinder.consolidate(rows);
     const out = [];
-    const overlap = (a, b) => {
-      const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
-      const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
-      return (ix * iy) / Math.min(a.w * a.h, b.w * b.h);
-    };
     // lattices of look-alike things; where the spectral detector already
     // sees a lattice, its reading (sharper spacings, the surface's tilt) wins
     const things = rowFinder.latticeRegions(lats)
-      .filter((l) => !periodic.some((q) => q.family === 'lattice' && overlap(q, l) > 0.4));
+      .filter((l) => !periodic.some((q) => q.family === 'lattice' && overlapShare(q, l) > 0.4));
     // A row and a lattice in the same place are one thing only when the
     // row's things are the lattice's (a row of houses on rippled sand is
     // not part of a lattice on the ripples)
     const rowRegs = rows.map((r) => rowFinder.toRegion(r, r.img, r.iw, r.scale));
     const onLattice = (reg, l) => {
-      if (overlap(l, reg) <= 0.6) return false;
+      if (overlapShare(l, reg) <= 0.6) return false;
       let n = 0;
       for (const m of reg.members) {
         const mx = m.x + m.w / 2;
@@ -868,33 +909,24 @@ export function createDetector(options = {}) {
     };
     for (let i = things.length - 1; i >= 0; i--) {
       const l = things[i];
-      if (periodic.some((q) => q.type === TYPE.STRIPE && overlap(l, q) > 0.8 && l.w * l.h < opt.latticeInStripe * q.w * q.h &&
+      if (periodic.some((q) => q.type === TYPE.STRIPE && overlapShare(l, q) > 0.8 && l.w * l.h < opt.latticeInStripe * q.w * q.h &&
         families(l).some(([p, a]) => ratio(q.period, p) < 1.25 && angleDiff(q.angle, a) < 12))) things.splice(i, 1);
     }
     // a stripe region on such a lattice, along one of its directions, is
     // that lattice seen one way (as absorbRims does for spectral lattices)
     for (const q of periodic) {
       if (q.type !== TYPE.STRIPE) continue;
-      const host = things.find((l) => overlap(l, q) > 0.5 &&
+      const host = things.find((l) => overlapShare(l, q) > 0.5 &&
         l.dirs.some(([p, a]) => ratio(q.period, p) < 1.25 && angleDiff(q.angle, a) < 12));
       if (!host) continue;
       q.absorbed = true;
-      const x1 = Math.max(host.x + host.w, q.x + q.w);
-      const y1 = Math.max(host.y + host.h, q.y + q.h);
-      host.x = Math.min(host.x, q.x);
-      host.y = Math.min(host.y, q.y);
-      host.w = x1 - host.x;
-      host.h = y1 - host.y;
-      host.cx = host.x + host.w / 2;
-      host.cy = host.y + host.h / 2;
+      absorbBox(host, q);
     }
     for (const l of things) l.quad = [[l.x, l.y], [l.x + l.w, l.y], [l.x + l.w, l.y + l.h], [l.x, l.y + l.h]];
     rows.forEach((r, i) => {
       const reg = rowRegs[i];
       const dup = periodic.some((q) => {
-        const ix = Math.max(0, Math.min(q.x + q.w, reg.x + reg.w) - Math.max(q.x, reg.x));
-        const iy = Math.max(0, Math.min(q.y + q.h, reg.y + reg.h) - Math.max(q.y, reg.y));
-        if ((ix * iy) / (reg.w * reg.h) < 0.4) return false;
+        if (overlapArea(q, reg) / (reg.w * reg.h) < 0.4) return false;
         const ps = [q.period, q.period2].filter(Boolean);
         return ps.some((p) => [1, 2, 3].some((m) => ratio(reg.period, p * m) < 1.3));
       });
@@ -911,22 +943,14 @@ export function createDetector(options = {}) {
     const { cols, rows, cells } = lv;
     const seen = new Uint8Array(cols * rows);
     const groups = [];
-    const nb4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-    const nb8 = [...nb4, [1, 1], [1, -1], [-1, 1], [-1, -1]];
-    const nbs = eight ? nb8 : nb4;
+    const steps = eight ? NB8 : NB4;
     for (let i = 0; i < cells.length; i++) {
       if (seen[i] || !include(i)) continue;
       const group = [i];
       seen[i] = 1;
       for (let q = 0; q < group.length; q++) {
         const cur = group[q];
-        const cx = cur % cols;
-        const cy = (cur / cols) | 0;
-        for (const [dx, dy] of nbs) {
-          const x = cx + dx;
-          const y = cy + dy;
-          if (x < 0 || y < 0 || x >= cols || y >= rows) continue;
-          const j = y * cols + x;
+        for (const j of neighbours(cur, cols, rows, steps)) {
           if (seen[j] || !include(j) || !compat(cells[cur], cells[j])) continue;
           seen[j] = 1;
           group.push(j);
@@ -962,9 +986,7 @@ export function createDetector(options = {}) {
   function fitCenter(cs, normal) {
     let a11 = 0, a12 = 0, a22 = 0, b1 = 0, b2 = 0, sw = 0;
     const proj = cs.map((c) => {
-      const t = c.a1 / DEG;
-      const vx = normal ? Math.sin(t) : Math.cos(t);
-      const vy = normal ? Math.cos(t) : -Math.sin(t);
+      const [vx, vy] = lineDir(c.a1, normal);
       const p11 = 1 - vx * vx;
       const p12 = -vx * vy;
       const p22 = 1 - vy * vy;
@@ -1014,9 +1036,7 @@ export function createDetector(options = {}) {
     const M = new Float64Array(16);
     const v = new Float64Array(4);
     for (const c of cs) {
-      const t = c.a1 / DEG;
-      const nx = Math.sin(t);
-      const ny = Math.cos(t);
+      const [nx, ny] = lineDir(c.a1, true);
       const x = c.cx - mx;
       const y = c.cy - my;
       const g = [-ny * x - nx * y, nx * x - ny * y, ny, -nx];
@@ -1062,9 +1082,7 @@ export function createDetector(options = {}) {
   // where that angle means little, it is measured against the cell size.
   // Scale-free, so large rings are judged like small ones.
   function aimError(c, f, normal, size) {
-    const t = c.a1 / DEG;
-    const vx = normal ? Math.sin(t) : Math.cos(t);
-    const vy = normal ? Math.cos(t) : -Math.sin(t);
+    const [vx, vy] = lineDir(c.a1, normal);
     const ux = c.cx - f.x;
     const uy = c.cy - f.y;
     const [a, b, d] = f.A || [0.5, 0, 0.5];
@@ -1101,7 +1119,6 @@ export function createDetector(options = {}) {
   function summarize(cs, type, lv) {
     let sw = 0, gw = 0, lp = 0, lp2 = 0, ca = 0, sa = 0, ang2 = 0, contrast = 0, score = 0;
     let sharp = 0, sharpW = 0, dotsW = 0, gridW = 0, lprom = 0, iso = 0, rep = 0;
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     // A lattice region's spacings and angles come from its lattice cells
     // only: stripe cells it took in (rims, grown) see just one direction.
     const lattice = type === 'lattice';
@@ -1129,11 +1146,8 @@ export function createDetector(options = {}) {
         sharp += w * c.sharp;
         sharpW += w;
       }
-      x0 = Math.min(x0, c.cx - c.core / 2);
-      y0 = Math.min(y0, c.cy - c.core / 2);
-      x1 = Math.max(x1, c.cx + c.core / 2);
-      y1 = Math.max(y1, c.cy + c.core / 2);
     }
+    const { x0, y0, x1, y1 } = cellsBox(cs);
     if (type === 'lattice') type = dotsW > gridW ? TYPE.DOTS : TYPE.GRID;
     const reg = {
       type,
@@ -1312,14 +1326,7 @@ export function createDetector(options = {}) {
       const fits = (c) => c.type === TYPE.STRIPE && c.weak &&
         dirs.some(([pp, aa]) => ratio(c.p1, pp) < 1.2 && angleDiff(c.a1, aa) < 15);
       for (let q = 0; q < p.g.length; q++) {
-        const cur = p.g[q];
-        const x = cur % cols;
-        const y = (cur / cols) | 0;
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const xx = x + dx;
-          const yy = y + dy;
-          if (xx < 0 || yy < 0 || xx >= cols || yy >= rows) continue;
-          const j = yy * cols + xx;
+        for (const j of neighbours(p.g[q], cols, rows)) {
           if (taken[j] || used[j] || !fits(cells[j])) continue;
           taken[j] = 1;
           p.g.push(j);
@@ -1330,19 +1337,9 @@ export function createDetector(options = {}) {
     }
   }
 
-  function partBox(p) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const c of p.cs) {
-      x0 = Math.min(x0, c.cx - c.core / 2);
-      y0 = Math.min(y0, c.cy - c.core / 2);
-      x1 = Math.max(x1, c.cx + c.core / 2);
-      y1 = Math.max(y1, c.cy + c.core / 2);
-    }
-    return { x0, y0, x1, y1 };
-  }
   function near(a, b, gap) {
-    const A = partBox(a);
-    const B = partBox(b);
+    const A = cellsBox(a.cs);
+    const B = cellsBox(b.cs);
     return A.x0 - gap < B.x1 && B.x0 - gap < A.x1 && A.y0 - gap < B.y1 && B.y0 - gap < A.y1;
   }
   function partMean(p) {
@@ -1401,13 +1398,8 @@ export function createDetector(options = {}) {
     let matchA = false;
     let matchB = false;
     for (const i of group) {
-      const x = i % cols;
-      const y = (i / cols) | 0;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const xx = x + dx;
-        const yy = y + dy;
-        if (xx < 0 || yy < 0 || xx >= cols || yy >= rows) continue;
-        const c = cells[yy * cols + xx];
+      for (const j of neighbours(i, cols, rows)) {
+        const c = cells[j];
         if (c.type !== TYPE.STRIPE || c.weak) continue;
         for (const ref of group) {
           const g = cells[ref];
@@ -1438,14 +1430,7 @@ export function createDetector(options = {}) {
       });
       if (!host) return;
       if (host.cellsOf && S.cellsOf) host.cellsOf = host.cellsOf.concat(S.cellsOf);
-      const x1 = Math.max(host.x + host.w, S.x + S.w);
-      const y1 = Math.max(host.y + host.h, S.y + S.h);
-      host.x = Math.min(host.x, S.x);
-      host.y = Math.min(host.y, S.y);
-      host.w = x1 - host.x;
-      host.h = y1 - host.y;
-      host.cx = host.x + host.w / 2;
-      host.cy = host.y + host.h / 2;
+      absorbBox(host, S);
       drop.add(i);
     });
     return regions.filter((_, i) => !drop.has(i));
@@ -1461,14 +1446,9 @@ export function createDetector(options = {}) {
     return regions.filter((S) => {
       if (S.type !== TYPE.STRIPE) return true;
       return !hosts.some((H) => {
-        const ix = Math.max(0, Math.min(H.x + H.w, S.x + S.w) - Math.max(H.x, S.x));
-        const iy = Math.max(0, Math.min(H.y + H.h, S.y + S.h) - Math.max(H.y, S.y));
-        if ((ix * iy) / (S.w * S.h) < 0.5) return false;
+        if (overlapArea(H, S) / (S.w * S.h) < 0.5) return false;
         if (H.type === TYPE.CONCENTRIC && ratio(S.period, H.period) > 1.5) return false;
-        const t = S.angle / DEG;
-        const normal = H.type === TYPE.CONCENTRIC;
-        const vx = normal ? Math.sin(t) : Math.cos(t);
-        const vy = normal ? Math.cos(t) : -Math.sin(t);
+        const [vx, vy] = lineDir(S.angle, H.type === TYPE.CONCENTRIC);
         const dx = H.center.x - S.cx;
         const dy = H.center.y - S.cy;
         const d = Math.hypot(dx, dy);
@@ -1486,9 +1466,7 @@ export function createDetector(options = {}) {
         const a = regions[i];
         const b = regions[j];
         if (a.family !== b.family) continue;
-        const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
-        const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
-        const overlap = (ix * iy) / Math.min(a.w * a.h, b.w * b.h);
+        const overlap = overlapShare(a, b);
         if (a.level === b.level) {
           // a small patch inside a much larger region of the same kind is a
           // local hiccup of that region (a stray line crossing it…)

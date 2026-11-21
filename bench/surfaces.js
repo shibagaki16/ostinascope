@@ -16,7 +16,7 @@
 // Open bench/surfaces.html, or `node bench/page.mjs <url of surfaces.html>`.
 
 import { createDetector } from '../src/detector.js';
-import { createTracker } from '../src/tracker.js';
+import { createTracker, toViewUnits } from '../src/tracker.js';
 import { greyOf } from '../src/motion.js';
 import { createFollower } from '../src/follow.js';
 import { applyH, invH, mulH } from '../src/homography.js';
@@ -203,14 +203,7 @@ async function runSequence(wall, floor, seed, frames, det, V3) {
   const noise = () => (nz() + nz() - 1) * 4;
   const unit = Math.min(AW, AH);
   const view = { w: AW / unit, h: AH / unit };
-  const toV = (r) => ({
-    ...r, cx: r.cx / unit, cy: r.cy / unit, w: r.w / unit, h: r.h / unit, period: r.period / unit,
-    period2: r.period2 ? r.period2 / unit : undefined,
-    center: r.center ? { x: r.center.x / unit, y: r.center.y / unit } : null,
-    quad: r.quad ? r.quad.map(([x, y]) => [x / unit, y / unit]) : undefined,
-    size: r.size ? r.size / unit : undefined,
-    members: r.members ? r.members.map((m) => ({ ...m, x: m.x / unit, y: m.y / unit, w: m.w / unit, h: m.h / unit, t: m.t / unit })) : undefined,
-  });
+  const toV = (r) => toViewUnits(r, unit);
   let analysis = null;
   for (let f = 0; f < frames; f++) {
     const t = (f * 1000) / FPS;

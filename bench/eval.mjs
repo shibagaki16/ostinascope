@@ -10,11 +10,10 @@ const args = process.argv.slice(2);
 const outIdx = args.indexOf('--out');
 const outPath = outIdx >= 0 ? args.splice(outIdx, 2)[1] : null;
 const [detPath, dir, optJSON] = args;
-const { createDetector } = await import(pathToFileURL(resolve(detPath)).href);
+const { createDetector, familyOf: famOf } = await import(pathToFileURL(resolve(detPath)).href);
 const det = createDetector(optJSON ? JSON.parse(optJSON) : {});
 const index = JSON.parse(readFileSync(`${dir}/index.json`, 'utf8'));
 
-const famOf = (t) => (t === 'STRIPE' ? 'line' : t === 'GRID' || t === 'DOTS' ? 'lattice' : t === 'ROW' ? 'row' : 'radial');
 const out = [];
 let ms = 0;
 for (const v of index) {
