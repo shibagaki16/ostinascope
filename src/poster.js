@@ -577,11 +577,15 @@ export const TYPES = {
     label: '枠と目盛り',
     draw(g, el, ctx) {
       const [W, H] = ctx.spec.size;
-      // the frame is a whole number of ticks each way (its corners sit on
-      // ticks), centred; margin is the least space around it
-      const TICK = 30;
-      const fw = Math.floor((W - 2 * el.margin) / TICK) * TICK;
-      const fh = Math.floor((H - 2 * el.margin) / TICK) * TICK;
+      // ticks every TICK, a number every MAJOR ticks. The frame is a whole
+      // number of numbered spans each way, so all four corners sit on
+      // numbered ticks (1800 × 2546 with margin 70: 1600 × 2400), centred;
+      // margin is the least space around it
+      const TICK = 20;
+      const MAJOR = 10;
+      const span = TICK * MAJOR;
+      const fw = Math.floor((W - 2 * el.margin) / span) * span;
+      const fh = Math.floor((H - 2 * el.margin) / span) * span;
       const x0 = (W - fw) / 2;
       const y0 = (H - fh) / 2;
       g.strokeStyle = ctx.color(el.color);
@@ -591,14 +595,14 @@ export const TYPES = {
       g.fillStyle = ctx.color(el.color);
       for (let d = 0; d <= fw; d += TICK) {
         const x = x0 + d;
-        const major = d % (10 * TICK) === 0;
+        const major = d % span === 0;
         g.fillRect(x, y0 - (major ? 18 : 8), 1, major ? 18 : 8);
         g.fillRect(x, y0 + fh, 1, major ? 18 : 8);
         if (major) g.fillText(String(d), x + 4, y0 - 20);
       }
       for (let d = 0; d <= fh; d += TICK) {
         const y = y0 + d;
-        const major = d % (10 * TICK) === 0;
+        const major = d % span === 0;
         g.fillRect(x0 - (major ? 18 : 8), y, major ? 18 : 8, 1);
         g.fillRect(x0 + fw, y, major ? 18 : 8, 1);
         if (major) {
