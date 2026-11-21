@@ -106,6 +106,10 @@ export class AudioEngine {
   get now() {
     return this.ctx ? this.ctx.currentTime : 0;
   }
+  /** Whether sound comes out (false: not started, suspended, or — iOS — interrupted). */
+  get running() {
+    return !!this.ctx && this.ctx.state === 'running';
+  }
   get beat() {
     return 60 / this.bpm;
   }
@@ -287,7 +291,24 @@ export class AudioEngine {
 
   _tick() {
     const ctx = this.ctx;
-    if (!ctx || ctx.state !== 'running') return;
+    if (!ctx) return;
+    if (ctx.state !== 'running') {
+      // Stopped (iOS: a call, another app's sound, a screen recording
+      // starting): the context's clock stands still, so no fade ever ends
+      // and the voices of lost patterns would pile up. Nothing is heard
+      // anyway: drop the fading ones now. Unless we stopped it ourselves
+      // (page hidden), ask it to run again now and then.
+      for (const v of [...this.voices.values()]) if (v.state === 'fading') this._remove(v);
+      const t = Date.now();
+      if (!this.held && t >= (this.retryAt || 0)) {
+        this.retryAt = t + 1000;
+        try {
+          const p = ctx.resume();
+          if (p && p.catch) p.catch(() => {});
+        } catch { /* not now */ }
+      }
+      return;
+    }
     const now = ctx.currentTime;
     const until = now + LOOKAHEAD;
     for (const v of [...this.voices.values()]) {
@@ -519,9 +540,14 @@ export class AudioEngine {
   }
 
   suspend() {
+    this.held = true; // on purpose (page hidden): _tick leaves it stopped
     if (this.ctx && this.ctx.state === 'running') this.ctx.suspend();
   }
   resumeContext() {
-    if (this.ctx && this.ctx.state !== 'running') this.ctx.resume();
+    this.held = false;
+    if (this.ctx && this.ctx.state !== 'running') {
+      const p = this.ctx.resume();
+      if (p && p.catch) p.catch(() => {});
+    }
   }
 }

@@ -439,6 +439,11 @@ document.addEventListener('visibilitychange', () => {
 
 $('#btn-camera').addEventListener('click', () => start('camera'));
 $('#btn-demo').addEventListener('click', () => start('demo'));
+// a tap anywhere brings back sound that iOS stopped (inside a gesture it
+// always may)
+document.addEventListener('pointerdown', () => {
+  if (state.running && !audio.running) audio.resumeContext();
+}, { passive: true });
 
 // ---------------------------------------------------------------------------
 // settings panel

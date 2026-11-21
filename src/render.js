@@ -539,6 +539,11 @@ export function createRenderer(canvas) {
     ctx.fillStyle = 'rgba(244,241,234,0.22)';
     ctx.fillRect(0, y0, W, 1);
     ctx.font = `500 9.5px ${FONT}`;
+    if (st.audio.ctx && !st.audio.running) {
+      ctx.fillStyle = '#FFD21F';
+      ctx.fillText('♪ 音が止まっています — 画面をタップで再開', 12, y0 + 18);
+      return;
+    }
     if (!voices.length) {
       ctx.fillStyle = 'rgba(244,241,234,0.7)';
       const dots = '.'.repeat(1 + (Math.floor(st.now / 400) % 3));
@@ -611,7 +616,7 @@ export function createRenderer(canvas) {
 
     const S = Math.min(W, H); // view units → CSS px
     const k = W / st.procW; // analysis px → CSS px
-    const voiceRows = Math.max(1, st.audio.voices.size);
+    const voiceRows = st.audio.ctx && !st.audio.running ? 1 : Math.max(1, st.audio.voices.size);
     const bounds = {
       top: st.insets.top + (st.debug ? 56 : 46),
       bottom: H - st.insets.bottom - 14 - voiceRows * 17,
