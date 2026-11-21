@@ -6,10 +6,11 @@
 // poster can still be exported as JSON / PNG.
 
 import {
-  TYPES, paint, drawPoster, loadPoster, boundsOf, moveElement, createElement, context,
+  TYPES, paint, drawPoster, loadPoster, boundsOf, moveElement, createElement, context, drawElement, debrisPieces,
   PATTERN_DEFAULTS, SHAPE_DEFAULTS, POSTER_URL,
 } from '../../src/poster.js';
 import { createDetector } from '../../src/detector.js';
+import { distanceField, scatterPieces } from './scatter.js';
 import { COLORS } from '../../src/render.js';
 
 const $ = (s) => document.querySelector(s);
@@ -234,6 +235,7 @@ function renderPanel() {
     if (f.when && !f.when(el)) continue;
     form.append(fieldRow(el, f));
   }
+  if (el.type === 'debris') form.append(debrisActions(el));
 }
 
 function fieldRow(el, f) {
@@ -246,6 +248,7 @@ function fieldRow(el, f) {
   const commit = (value, opts) => {
     willChange(key);
     setPath(el, f.key, value);
+    if (el.type === 'piece' && f.key !== 'pin') el.pin = true; // placed by hand: keep it
     changed(opts);
   };
   let input;
@@ -535,6 +538,7 @@ function moveSelected(dx, dy, alone = false) {
   const el = selEl();
   if (!el) return;
   moveElement(el, dx, dy);
+  if (el.type === 'piece') el.pin = true; // placed by hand: keep it when scattering again
   if (!alone) for (const o of linkedTo(el)) moveElement(o, dx, dy);
   st.dirty = true;
   st.scope.stale = true;
@@ -624,6 +628,108 @@ function add(type) {
   st.spec.elements.push(el);
   st.sel = st.spec.elements.length - 1;
   changed({ structure: true });
+}
+
+// ---------------------------------------------------------------- debris: split it, scatter it into the gaps
+
+const piecesOf = (el) => (el.id ? st.spec.elements.filter((o) => o.type === 'piece' && o.for === el.id) : []);
+
+function debrisActions(el) {
+  const box = document.createElement('div');
+  box.className = 'actions';
+  const row = document.createElement('div');
+  row.className = 'row';
+  const button = (text, title, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button'; // inside the form: not a submit
+    b.textContent = text;
+    b.title = title;
+    b.addEventListener('click', fn);
+    row.append(b);
+  };
+  const keep = document.createElement('label');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = true;
+  keep.append(cb, ' 固定したものは残す');
+  button('隙間に撒く', 'ほかの図形・文字から「ほかとの隙間」以上離れた場所に、範囲の中で撒き直す', () => scatterDebris(el, cb.checked));
+  if (!el.split) button('今の配置をばらす', '見た目はそのままで、1 個ずつ動かせる要素にする', () => splitDebris(el));
+  const n = piecesOf(el).length;
+  const pinned = piecesOf(el).filter((o) => o.pin).length;
+  const note = document.createElement('p');
+  note.className = 'hint';
+  note.id = 'debris-note';
+  note.textContent = el.split
+    ? `ばらした状態：がらくた ${n} 個（固定 ${pinned} 個）。1 個ずつ選んで動かせます。手で動かしたり項目を変えたりしたものは固定になり、撒き直しても残ります。`
+    : '種から描いています。ばらすか撒くと、1 個ずつ選んで動かせるようになります。';
+  box.append(row, keep, note);
+  return box;
+}
+
+// what is taken, at half resolution: everything but this debris and its
+// pieces, painted on a transparent canvas (pale discs stay free)
+function freeSpace(skip, scale = 0.5) {
+  const w = Math.ceil(W() * scale);
+  const h = Math.ceil(H() * scale);
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const cg = cv.getContext('2d', { willReadFrequently: true });
+  cg.scale(scale, scale);
+  const c = ctx();
+  for (const o of st.spec.elements) if (!o.hidden && !skip(o)) drawElement(cg, o, c);
+  const a = cg.getImageData(0, 0, w, h).data;
+  const taken = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) taken[i] = a[4 * i + 3] > 127;
+  return { dist: distanceField(taken, w, h), w, h, scale };
+}
+
+function ensureId(el) {
+  if (!el.id) el.id = uniqueId(el.type);
+  return el.id;
+}
+
+// new piece elements for `el`, right after it in the drawing order
+function insertPieces(el, pieces) {
+  const ids = new Set(st.spec.elements.map((o) => o.id));
+  let k = 1;
+  const els = pieces.map((p) => {
+    while (ids.has(`${el.id}-${k}`)) k++;
+    const id = `${el.id}-${k}`;
+    ids.add(id);
+    return { id, type: 'piece', for: el.id, ...p, alpha: el.alpha };
+  });
+  st.spec.elements.splice(st.spec.elements.indexOf(el) + 1, 0, ...els);
+}
+
+function splitDebris(el) {
+  willChange();
+  ensureId(el);
+  const round = (v) => Math.round(v * 10) / 10;
+  insertPieces(el, debrisPieces(el).map((p) => ({ ...p, x: Math.round(p.x), y: Math.round(p.y), r: round(p.r), rotation: round(p.rotation) })));
+  el.split = true;
+  st.sel = st.spec.elements.indexOf(el);
+  changed({ structure: true });
+  showStatus(`がらくたを ${el.count} 個の要素にばらしました`);
+}
+
+function scatterDebris(el, keepPinned) {
+  willChange();
+  ensureId(el);
+  const own = piecesOf(el);
+  const keep = keepPinned ? own.filter((o) => o.pin) : [];
+  st.spec.elements = st.spec.elements.filter((o) => !own.includes(o) || keep.includes(o));
+  const field = freeSpace((o) => o === el || (o.type === 'piece' && o.for === el.id));
+  el.seed = ((el.seed || 0) + 1) >>> 0; // a new draw each time
+  el.gap ??= 24;
+  const area = { x0: el.x, y0: el.y, x1: el.x + el.w, y1: el.y + el.h };
+  const res = scatterPieces(field, area, { count: el.count, rMin: el.rMin, rMax: el.rMax, gap: el.gap, colors: el.colors, seed: el.seed }, keep);
+  insertPieces(el, res.pieces);
+  el.split = true;
+  st.sel = st.spec.elements.indexOf(el);
+  changed({ structure: true });
+  const short = res.placed < res.wanted ? `（隙間が足りず ${res.wanted - res.placed} 個は置けませんでした）` : '';
+  showStatus(`がらくたを ${res.placed} 個撒きました${keep.length ? `、固定 ${keep.length} 個はそのまま` : ''}${short}`);
 }
 
 // ---------------------------------------------------------------- scope: what would the camera see?

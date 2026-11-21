@@ -84,7 +84,7 @@ function moveXY(el, dx, dy) {
   el.y += dy;
 }
 
-function rng(seed) {
+export function rng(seed) {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
@@ -96,6 +96,62 @@ function rng(seed) {
 }
 
 const box = (x0, y0, x1, y1) => ({ x0, y0, x1, y1 });
+
+// --------------------------------------------------------------------------
+// debris pieces: { shape, x, y, r, rotation (°), color }
+
+export const PIECE_SHAPES = ['tri', 'disc', 'bar'];
+
+// The pieces a seeded debris element draws (triangle, disc, bar in turn).
+export function debrisPieces(el) {
+  const rnd = rng(el.seed);
+  const out = [];
+  for (let i = 0; i < el.count; i++) {
+    const x = el.x + rnd() * el.w;
+    const y = el.y + rnd() * el.h;
+    const r = el.rMin + rnd() * (el.rMax - el.rMin);
+    const shape = PIECE_SHAPES[i % 3];
+    out.push({ shape, x, y, r, rotation: shape === 'bar' ? rnd() * 180 : 0, color: el.colors[i % el.colors.length] });
+  }
+  return out;
+}
+
+// The smallest circle around a piece: { x, y, R }. A triangle's apex is r
+// above (x, y) and its base r below, so its circle is centred r/4 lower.
+export function pieceCircle(p) {
+  if (p.shape === 'disc') return { x: p.x, y: p.y, R: p.r };
+  if (p.shape === 'bar') return { x: p.x, y: p.y, R: Math.hypot(p.r, p.r / 3) };
+  const a = (p.rotation || 0) * RAD;
+  return { x: p.x - Math.sin(a) * (p.r / 4), y: p.y + Math.cos(a) * (p.r / 4), R: 1.25 * p.r };
+}
+
+function drawPiece(g, p, color) {
+  const { x, y, r } = p;
+  g.fillStyle = color(p.color);
+  if (p.shape === 'disc') {
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.fill();
+    return;
+  }
+  g.save();
+  if (p.rotation) {
+    g.translate(x, y);
+    g.rotate(p.rotation * RAD);
+    g.translate(-x, -y);
+  }
+  if (p.shape === 'bar') {
+    g.fillRect(x - r, y - r / 3, 2 * r, (2 * r) / 3);
+  } else {
+    g.beginPath();
+    g.moveTo(x, y - r);
+    g.lineTo(x + r, y + r);
+    g.lineTo(x - r, y + r);
+    g.closePath();
+    g.fill();
+  }
+  g.restore();
+}
 
 // first value ≥ lo on the lattice phase + k·step
 const firstOnLattice = (phase, step, lo) => phase + Math.ceil((lo - phase) / step) * step;
@@ -617,45 +673,46 @@ export const TYPES = {
     make: () => ({ type: 'frame', margin: 70, color: 'ink' }),
   },
 
-  // non-repeating Kandinsky debris: triangles, discs and bars in turn
+  // non-repeating Kandinsky debris: triangles, discs and bars in turn, from
+  // a seed. Once split (the editor's "ばらす" / "隙間に撒く"), the pieces are
+  // elements of their own (`piece`, linked to this one) and this element
+  // only keeps the area and the settings for scattering them again.
   debris: {
     label: 'がらくた（ランダム）',
     draw(g, el, ctx) {
-      const rnd = rng(el.seed);
+      if (el.split) return;
       g.globalAlpha = el.alpha;
-      for (let i = 0; i < el.count; i++) {
-        const x = el.x + rnd() * el.w;
-        const y = el.y + rnd() * el.h;
-        const r = el.rMin + rnd() * (el.rMax - el.rMin);
-        g.fillStyle = ctx.color(el.colors[i % el.colors.length]);
-        if (i % 3 === 0) {
-          g.beginPath();
-          g.moveTo(x, y - r);
-          g.lineTo(x + r, y + r);
-          g.lineTo(x - r, y + r);
-          g.closePath();
-          g.fill();
-        } else if (i % 3 === 1) {
-          g.beginPath();
-          g.arc(x, y, r, 0, Math.PI * 2);
-          g.fill();
-        } else {
-          g.save();
-          g.translate(x, y);
-          g.rotate(rnd() * Math.PI);
-          g.fillRect(-r, -r / 3, 2 * r, (2 * r) / 3);
-          g.restore();
-        }
-      }
+      for (const p of debrisPieces(el)) drawPiece(g, p, ctx.color);
     },
     bounds: (el) => box(el.x, el.y, el.x + el.w, el.y + el.h),
     fields: [
       ...XY, F.num('w', '範囲の幅'), F.num('h', '範囲の高さ'), F.num('seed', '乱数の種'), F.num('count', '個数', 1, 0),
       F.num('rMin', '最小'), F.num('rMax', '最大'), { key: 'colors', label: '色 (…, …)', type: 'colors' },
       F.num('alpha', '不透明度', 0.05, 0, 1),
+      { ...F.num('gap', 'ほかとの隙間', 1, 0), optional: true },
     ],
     make: () => ({ type: 'debris', x: -300, y: -300, w: 600, h: 600, seed: 1, count: 12, rMin: 8, rMax: 40,
-      colors: ['red', 'yellow', 'blue', 'ink'], alpha: 0.9 }),
+      colors: ['red', 'yellow', 'blue', 'ink'], alpha: 0.9, gap: 24 }),
+  },
+
+  // one piece of debris
+  piece: {
+    label: 'がらくた（1 個）',
+    draw(g, el, ctx) {
+      g.globalAlpha = el.alpha ?? 1;
+      drawPiece(g, el, ctx.color);
+    },
+    bounds(el) {
+      if (el.shape === 'disc' || (el.shape === 'tri' && !el.rotation)) return box(el.x - el.r, el.y - el.r, el.x + el.r, el.y + el.r);
+      const c = pieceCircle(el);
+      return box(c.x - c.R, c.y - c.R, c.x + c.R, c.y + c.R);
+    },
+    fields: [
+      ...XY, { key: 'shape', label: '形', type: 'select', options: PIECE_SHAPES }, F.num('r', '大きさ', 0.5, 1),
+      F.num('rotation', '回転°'), F.color('color'), F.num('alpha', '不透明度', 0.05, 0, 1),
+      { key: 'pin', label: '固定（撒き直しても残す）', type: 'bool', optional: true },
+    ],
+    make: () => ({ type: 'piece', x: 0, y: 0, shape: 'tri', r: 30, rotation: 0, color: 'red', alpha: 0.9 }),
   },
 
   scatter: {

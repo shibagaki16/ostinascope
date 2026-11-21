@@ -100,6 +100,8 @@ aside {
   background: #fff;
 }
 #fields textarea { min-height: 7em; resize: vertical; white-space: pre; }
+#fields .actions { margin: 10px 0 4px; padding-top: 6px; border-top: 1px dashed var(--line); }
+#fields .actions label { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
 .colorpick { display: flex; gap: 4px; align-items: center; }
 .colorpick input[type=color] { width: 28px; height: 22px; padding: 0; border: 1px solid var(--line); }
 .colorpick input[type=text] { flex: 1; }
