@@ -577,34 +577,42 @@ export const TYPES = {
     label: '枠と目盛り',
     draw(g, el, ctx) {
       const [W, H] = ctx.spec.size;
-      const m = el.margin;
+      // the frame is a whole number of ticks each way (its corners sit on
+      // ticks), centred; margin is the least space around it
+      const TICK = 30;
+      const fw = Math.floor((W - 2 * el.margin) / TICK) * TICK;
+      const fh = Math.floor((H - 2 * el.margin) / TICK) * TICK;
+      const x0 = (W - fw) / 2;
+      const y0 = (H - fh) / 2;
       g.strokeStyle = ctx.color(el.color);
       g.lineWidth = 1.5;
-      g.strokeRect(m, m, W - 2 * m, H - 2 * m);
+      g.strokeRect(x0, y0, fw, fh);
       g.font = `400 13px ${MONO}`;
       g.fillStyle = ctx.color(el.color);
-      for (let x = m; x <= W - m; x += 30) {
-        const major = (x - m) % 300 === 0;
-        g.fillRect(x, m - (major ? 18 : 8), 1, major ? 18 : 8);
-        g.fillRect(x, H - m, 1, major ? 18 : 8);
-        if (major) g.fillText(String(x - m), x + 4, m - 20);
+      for (let d = 0; d <= fw; d += TICK) {
+        const x = x0 + d;
+        const major = d % (10 * TICK) === 0;
+        g.fillRect(x, y0 - (major ? 18 : 8), 1, major ? 18 : 8);
+        g.fillRect(x, y0 + fh, 1, major ? 18 : 8);
+        if (major) g.fillText(String(d), x + 4, y0 - 20);
       }
-      for (let y = m; y <= H - m; y += 30) {
-        const major = (y - m) % 300 === 0;
-        g.fillRect(m - (major ? 18 : 8), y, major ? 18 : 8, 1);
-        g.fillRect(W - m, y, major ? 18 : 8, 1);
+      for (let d = 0; d <= fh; d += TICK) {
+        const y = y0 + d;
+        const major = d % (10 * TICK) === 0;
+        g.fillRect(x0 - (major ? 18 : 8), y, major ? 18 : 8, 1);
+        g.fillRect(x0 + fw, y, major ? 18 : 8, 1);
         if (major) {
           g.save();
-          g.translate(m - 26, y - 4);
+          g.translate(x0 - 26, y - 4);
           g.rotate(-Math.PI / 2);
-          g.fillText(String(y - m), 0, 0);
+          g.fillText(String(d), 0, 0);
           g.restore();
         }
       }
     },
     bounds: (el, g, ctx) => box(0, 0, ctx.spec.size[0], el.margin),
     move() {},
-    fields: [F.num('margin', '余白'), F.color('color')],
+    fields: [F.num('margin', '余白（最小）'), F.color('color')],
     make: () => ({ type: 'frame', margin: 70, color: 'ink' }),
   },
 
