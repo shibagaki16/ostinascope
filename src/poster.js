@@ -10,6 +10,7 @@
 // larger, e.g. 2 for a print test sheet. Colours are palette names or CSS.
 
 import { mod, TO_RAD } from './util.js';
+import { qrCode } from './qr.js';
 
 export const POSTER_URL = new URL('../poster/poster.json', import.meta.url).href;
 const MONO = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
@@ -689,4 +690,46 @@ export const TYPES = {
     fields: [...XY, F.num('nx', '横の数', 1, 1), F.num('ny', '縦の数', 1, 1), F.num('size', 'マスの大きさ'), F.color('color')],
     make: () => ({ type: 'checker', x: -28, y: -28, nx: 4, ny: 4, size: 14, color: 'ink' }),
   },
+
+  // a QR code (the app's address): whole-px modules, so the print is crisp,
+  // with the standard's quiet zone of 4 modules in the ground colour
+  qr: {
+    label: '2 次元コード',
+    draw(g, el, ctx) {
+      const m = qrOf(el);
+      const q = 4;
+      const s = el.module;
+      const n = m.length + 2 * q;
+      g.fillStyle = ctx.color(el.bg);
+      g.fillRect(el.x, el.y, n * s, n * s);
+      g.fillStyle = ctx.color(el.color);
+      for (let y = 0; y < m.length; y++) {
+        // a run of dark modules as one rectangle (no seams between them)
+        for (let x = 0; x < m.length; x++) {
+          if (!m[y][x]) continue;
+          let e = x;
+          while (e + 1 < m.length && m[y][e + 1]) e++;
+          g.fillRect(el.x + (x + q) * s, el.y + (y + q) * s, (e - x + 1) * s, s);
+          x = e;
+        }
+      }
+    },
+    bounds: (el) => {
+      const n = qrOf(el).length + 8;
+      return box(el.x, el.y, el.x + n * el.module, el.y + n * el.module);
+    },
+    fields: [...XY, F.text('text', '載せる文字（URL）'), F.num('module', '1 マスの大きさ', 1, 1), F.color('color'), F.color('bg', '地の色')],
+    make: () => ({ type: 'qr', x: 0, y: 0, text: 'https://trow16.github.io/ostinascope/', module: 6, color: 'ink', bg: 'paper' }),
+  },
 };
+
+// QR modules of an element, made once per text
+const qrCache = new Map();
+function qrOf(el) {
+  const key = String(el.text || ' ');
+  if (!qrCache.has(key)) {
+    if (qrCache.size > 32) qrCache.clear();
+    qrCache.set(key, qrCode(key, 'M'));
+  }
+  return qrCache.get(key);
+}

@@ -206,6 +206,7 @@ src/audio.js        Web Audio エンジン
 src/render.js       オーバーレイ描画
 src/sources.js      カメラ／デモ画像
 src/poster.js       ポスターの描画（要素の種類・項目・描き方）
+src/qr.js           QR コード（ポスターにアプリの URL を載せる。外部のライブラリなし）
 src/util.js         共通の小さな計算
 src/update.js       最新版の取得（Service Worker の登録・版の表示・新しい版の知らせ・「最新版に更新」）
 src/build.js        版（公開時にワークフローがコミットと時刻を書き込む。手元では null）
