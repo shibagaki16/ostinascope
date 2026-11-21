@@ -238,6 +238,7 @@ node bench/why.mjs src/detector.js bench/data/nviews [ラベル,…]   # 反応�
 node bench/families.mjs src/detector.js [--json out.json]     # 実写の分類ごと：格子・同心円/放射が正しく出たか、縞に格子・模様なしに何か出たか
 node bench/families.mjs src/detector.js --labels bench/labels.json  # 目で付けた正解で：写っているビューで正しい種類がその上に出たか、写っていないビューに出たか
 python3 -I bench/labelsheet.py <ラベル> out.png [all|rest]      # 正解を付けるための一覧画像（ラベル用のマス目 A1〜 を描く）
+node bench/video.mjs bench/data/phoneseq bench/data/phone/*.mov  # スマホの動画を 10 Hz のフレーム列に（ヘッドレスの Chrome で再生しながら。seq.mjs で使える）
 node bench/abtime.mjs <旧>/src/detector.js "$PWD/src/detector.js" bench/data/views  # 解析時間を交互に 5 回ずつ測り、最速どうしで比べる
 node bench/page.mjs "http://127.0.0.1:8000/bench/follow.html?seqs=8&photos=zebra_0.jpg,facade_0.jpg"  # 枠が面からずれる量（追従あり／なし）、面の傾き
 node bench/page.mjs "http://127.0.0.1:8000/bench/surfaces.html?seqs=6"   # 壁＋床の場面：面の分け方、面ごとの追従
