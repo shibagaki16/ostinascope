@@ -47,7 +47,7 @@ export function familyOf(type) {
 }
 
 export const DETECTOR_DEFAULTS = Object.freeze({
-  sensitivity: 1.8, // >1 = more permissive (also loosens the ROW thresholds)
+  sensitivity: 1.3, // >1 = more permissive (also loosens the ROW thresholds)
   minContrast: 0.02, // grey std below this = blank cell
   minProminence: 20, // peak power / median power at the same radius
   minIsolation: 0.85, // share of the 5×5 bins around the peak that sits in its 3×3
