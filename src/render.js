@@ -63,7 +63,7 @@ export function createRenderer(canvas) {
     };
   }
 
-  function tag(text, x, y, color, { align = 'left', size = 10.5, alpha = 1, bg = 0.72 } = {}) {
+  function tag(text, x, y, color, { align = 'left', size = 10.5, alpha = 1, bg = 0.88 } = {}) {
     ctx.save();
     ctx.font = `500 ${size}px ${FONT}`;
     const w = ctx.measureText(text).width;

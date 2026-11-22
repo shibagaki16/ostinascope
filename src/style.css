@@ -6,6 +6,7 @@
   --blue: #1f4fd1;
   --night: #0b0b0d;
   --fog: rgba(244, 241, 234, 0.85);
+  --readout: #ffd21f;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   color-scheme: dark;
 }
@@ -121,6 +122,11 @@ button {
   cursor: pointer;
 }
 
+/* keyboard focus: a 2px line 2px off the control — ink on paper, the readout at night */
+#start :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+#btn-settings:focus-visible,
+#panel :focus-visible { outline: 2px solid var(--readout); outline-offset: 2px; }
+
 .primary,
 .secondary {
   display: block;
@@ -150,7 +156,8 @@ button {
   min-height: 1em;
   margin: 10px 0 0;
   color: var(--red);
-  font-size: 12px;
+  font-size: 14px;
+  font-weight: 500;
   line-height: 1.5;
 }
 
@@ -238,12 +245,12 @@ body.running #btn-settings { display: flex; }
 }
 #panel output {
   float: right;
-  color: #ffd21f;
+  color: var(--readout);
 }
 #panel input[type="range"] {
   width: 100%;
   margin: 6px 0 0;
-  accent-color: #ffd21f;
+  accent-color: var(--readout);
 }
 #panel .check {
   display: flex;
