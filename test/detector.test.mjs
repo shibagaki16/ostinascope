@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDetector, angleDiff, TYPE } from '../src/detector.js';
+import { createDetector, angleDiff, TYPE } from '../src/detect/detector.js';
 import * as S from './synth.mjs';
 
 const W = 192;

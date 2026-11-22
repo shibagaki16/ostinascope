@@ -17,7 +17,7 @@
 //
 // Pure module (no DOM).
 
-import { clamp, overlapShare } from './util.js';
+import { clamp, overlapShare } from '../util.js';
 
 export const CENTER_DEFAULTS = Object.freeze({
   smooth: 3, // structure tensor window radius (px of the image given)

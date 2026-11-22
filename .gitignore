@@ -16,7 +16,7 @@ Icon?
 
 # Claude Code (personal settings)
 .claude/settings.local.json
-docs/
+docs/loop-detection.md
 
 # Node (no dependencies yet, but keep it clean if tooling is added)
 node_modules/

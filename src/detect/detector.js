@@ -20,8 +20,8 @@ import { createRowFinder } from './rows.js';
 import { createCenterFinder } from './centers.js';
 import { regionColor } from './color.js';
 import { fitPerspective, frequencyOf, planeFromLine, quadShape, rectifyFrequency, PLANE_DEFAULTS } from './plane.js';
-import { applyH } from './homography.js';
-import { angleDiff, clamp, overlapArea, overlapShare, ratio, TO_DEG as DEG } from './util.js';
+import { applyH } from '../homography.js';
+import { angleDiff, clamp, overlapArea, overlapShare, ratio, TO_DEG as DEG } from '../util.js';
 
 export { angleDiff }; // part of the detector's API (tests, tracker)
 

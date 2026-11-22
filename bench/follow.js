@@ -22,13 +22,13 @@
 // Runs in a browser (the poster is drawn with canvas): open
 // bench/follow.html, or `node bench/page.mjs <url of follow.html>`.
 
-import { drawPoster, loadPoster, boundsOf, context } from '../src/poster.js';
-import { createDetector, familyOf } from '../src/detector.js';
-import { createTracker, toViewUnits } from '../src/tracker.js';
-import { greyOf } from '../src/motion.js';
-import { createFollower } from '../src/follow.js';
+import { drawPoster, loadPoster, boundsOf, context } from '../src/poster/poster.js';
+import { createDetector, familyOf } from '../src/detect/detector.js';
+import { createTracker, toViewUnits } from '../src/track/tracker.js';
+import { greyOf } from '../src/track/motion.js';
+import { createFollower } from '../src/track/follow.js';
 import { applyH, invH, mulH } from '../src/homography.js';
-import { simpleRatio } from '../src/mapping.js';
+import { simpleRatio } from '../src/sound/mapping.js';
 import { rng } from '../src/util.js';
 
 export const AW = 192;

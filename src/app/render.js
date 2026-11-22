@@ -1,7 +1,7 @@
 // Ostinascope — overlay drawing, in the grammar of a scientific plate:
 // hairlines, corner brackets, dimension lines, rulers, monospaced notes.
 
-import { TO_RAD } from './util.js';
+import { TO_RAD } from '../util.js';
 
 export const COLORS = {
   STRIPE: '#FFD21F',

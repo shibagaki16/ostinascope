@@ -10,8 +10,8 @@
 // turns into a trapezoid.
 // Pure module (no DOM).
 
-import { angleDiff, lerp, TO_DEG as DEG } from './util.js';
-import { applyH, localScale } from './homography.js';
+import { angleDiff, lerp, TO_DEG as DEG } from '../util.js';
+import { applyH, localScale } from '../homography.js';
 
 /**
  * A detector region (analysis px) in view units, where `unit` px is 1 —

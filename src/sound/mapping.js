@@ -13,7 +13,7 @@
 //   level, orientation → pan.
 // Periods are in view units: 1 = the short side of the screen.
 
-import { clamp, mod } from './util.js';
+import { clamp, mod } from '../util.js';
 
 export const SCALE = [0, 3, 5, 7, 10]; // D minor pentatonic
 export const ROOT = 50; // D3

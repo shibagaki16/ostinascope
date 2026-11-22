@@ -11,7 +11,7 @@
 // Pure module (no DOM).
 
 import { createMotion } from './motion.js';
-import { scaleH } from './homography.js';
+import { scaleH } from '../homography.js';
 import { warpRegion } from './tracker.js';
 
 export const FOLLOW_DEFAULTS = Object.freeze({

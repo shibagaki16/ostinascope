@@ -7,7 +7,7 @@
 // must stay clear of everything taken, of the other pieces, and inside the
 // debris area. No canvas here, so it runs (and is tested) in Node too.
 
-import { pieceCircle, PIECE_SHAPES } from '../../src/poster.js';
+import { pieceCircle, PIECE_SHAPES } from '../../src/poster/poster.js';
 import { rng } from '../../src/util.js';
 
 // Euclidean distance (in cells) from each cell to the nearest taken cell:

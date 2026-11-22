@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTracker } from '../src/tracker.js';
+import { createTracker } from '../src/track/tracker.js';
 
 const view = { w: 1, h: 2 };
 const det = (cx, cy, extra = {}) => ({

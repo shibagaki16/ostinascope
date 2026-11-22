@@ -2,16 +2,16 @@
 // and the overlay at display rate. Between analyses the camera motion
 // (≈30 Hz) keeps every track on the surface it was found on.
 
-import { createAnalyzer } from './analysis.js';
-import { createTracker, toViewUnits } from './tracker.js';
-import { greyOf } from './motion.js';
-import { createFollower } from './follow.js';
-import { AudioEngine } from './audio.js';
-import { specFor, levelFor, panFor, fadeBarsFor } from './mapping.js';
-import { createRenderer } from './render.js';
-import { openCamera, createDemoSource } from './sources.js';
-import { drawPoster, loadPoster } from './poster.js';
-import { registerUpdates, serverVersion, formatVersion, refreshApp, runningBuild, publishedBuild, formatBuild } from './update.js';
+import { createAnalyzer } from './detect/analysis.js';
+import { createTracker, toViewUnits } from './track/tracker.js';
+import { greyOf } from './track/motion.js';
+import { createFollower } from './track/follow.js';
+import { AudioEngine } from './sound/audio.js';
+import { specFor, levelFor, panFor, fadeBarsFor } from './sound/mapping.js';
+import { createRenderer } from './app/render.js';
+import { openCamera, createDemoSource } from './app/sources.js';
+import { drawPoster, loadPoster } from './poster/poster.js';
+import { registerUpdates, serverVersion, formatVersion, refreshApp, runningBuild, publishedBuild, formatBuild } from './app/update.js';
 
 const $ = (s) => document.querySelector(s);
 const params = new URLSearchParams(location.search);

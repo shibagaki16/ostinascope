@@ -43,7 +43,7 @@
 //
 // Pure module (no DOM).
 
-import { clamp, overlapShare, TO_DEG as DEG } from './util.js';
+import { clamp, overlapShare, TO_DEG as DEG } from '../util.js';
 
 const NB = 6; // edge direction bins (0–180°)
 const ND = 9 * NB + 9; // descriptor length

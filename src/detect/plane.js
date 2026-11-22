@@ -14,7 +14,7 @@
 //
 // Pure module (no DOM).
 
-import { applyH, invH, mulH } from './homography.js';
+import { applyH, invH, mulH } from '../homography.js';
 
 export const PLANE_DEFAULTS = Object.freeze({
   minCells: 4, // cells a region needs before its tilt is estimated

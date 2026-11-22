@@ -8,10 +8,10 @@
 import {
   TYPES, paint, drawPoster, loadPoster, boundsOf, moveElement, createElement, context, drawElement, debrisPieces,
   PATTERN_DEFAULTS, SHAPE_DEFAULTS, POSTER_URL,
-} from '../../src/poster.js';
-import { createDetector } from '../../src/detector.js';
+} from '../../src/poster/poster.js';
+import { createDetector } from '../../src/detect/detector.js';
 import { distanceField, scatterPieces } from './scatter.js';
-import { COLORS } from '../../src/render.js';
+import { COLORS } from '../../src/app/render.js';
 
 const $ = (s) => document.querySelector(s);
 const posterCv = $('#poster');

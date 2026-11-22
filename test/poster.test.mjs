@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { TYPES, paint, boundsOf, createElement, moveElement, context } from '../src/poster.js';
+import { TYPES, paint, boundsOf, createElement, moveElement, context } from '../src/poster/poster.js';
 
 const spec = JSON.parse(readFileSync(new URL('../poster/poster.json', import.meta.url), 'utf8'));
 

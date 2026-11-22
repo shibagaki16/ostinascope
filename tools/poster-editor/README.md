@@ -49,5 +49,5 @@ python3 tools/poster-editor/serve.py
 
 ## アプリとの関係
 
-- このフォルダ（`tools/poster-editor/`）は、アプリの描画（`src/poster.js`）と検出器（`src/detector.js`）を**読むだけ**です。アプリ側はこのツールを参照していないので、フォルダごと消してもアプリは動きます。
-- 要素の種類を増やしたり描き方を変えたりするときは `src/poster.js` を直します。このツールの項目欄は、そこに書かれた項目の定義から自動で作られます。
+- このフォルダ（`tools/poster-editor/`）は、アプリの描画（`src/poster/poster.js`）と検出器（`src/detect/detector.js`）を**読むだけ**です。アプリ側はこのツールを参照していないので、フォルダごと消してもアプリは動きます。
+- 要素の種類を増やしたり描き方を変えたりするときは `src/poster/poster.js` を直します。このツールの項目欄は、そこに書かれた項目の定義から自動で作られます。

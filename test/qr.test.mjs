@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { qrCode, rsDivisor, rsRemainder } from '../src/qr.js';
+import { qrCode, rsDivisor, rsRemainder } from '../src/poster/qr.js';
 
 // Checked once against a real decoder (Chrome's BarcodeDetector): these
 // texts at these levels decode to themselves at these versions.

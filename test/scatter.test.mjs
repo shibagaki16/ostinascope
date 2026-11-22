@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { distanceField, scatterPieces } from '../tools/poster-editor/scatter.js';
-import { pieceCircle, debrisPieces } from '../src/poster.js';
+import { pieceCircle, debrisPieces } from '../src/poster/poster.js';
 
 test('distance field: the distance to the nearest taken cell', () => {
   const w = 23;

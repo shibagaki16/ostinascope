@@ -13,7 +13,7 @@ export const runningBuild = BUILD;
  */
 export async function publishedBuild() {
   try {
-    const res = await fetch(new URL('../version.json', import.meta.url), { cache: 'no-store' });
+    const res = await fetch(new URL('../../version.json', import.meta.url), { cache: 'no-store' });
     return res.ok ? await res.json() : null;
   } catch {
     return 'offline';

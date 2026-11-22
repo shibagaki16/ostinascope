@@ -15,10 +15,10 @@
 //
 // Open bench/surfaces.html, or `node bench/page.mjs <url of surfaces.html>`.
 
-import { createDetector } from '../src/detector.js';
-import { createTracker, toViewUnits } from '../src/tracker.js';
-import { greyOf } from '../src/motion.js';
-import { createFollower } from '../src/follow.js';
+import { createDetector } from '../src/detect/detector.js';
+import { createTracker, toViewUnits } from '../src/track/tracker.js';
+import { greyOf } from '../src/track/motion.js';
+import { createFollower } from '../src/track/follow.js';
 import { applyH, invH, mulH } from '../src/homography.js';
 import {
   AW, AH, FOCAL, FPS, ANALYSIS_EVERY, LATENCY, rng, mipmaps, posterSource, norm, cross, rotAxis, mean, pct,

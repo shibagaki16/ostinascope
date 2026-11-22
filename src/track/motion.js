@@ -20,8 +20,8 @@
 //
 // Pure module (no DOM): runs in the page, a worker or Node.
 
-import { applyH, fitH, IDENTITY, mulH } from './homography.js';
-import { rng } from './util.js';
+import { applyH, fitH, IDENTITY, mulH } from '../homography.js';
+import { rng } from '../util.js';
 
 export const MOTION_DEFAULTS = Object.freeze({
   levels: 3, // pyramid levels (192 → 96 → 48 px)

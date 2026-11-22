@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as M from '../src/mapping.js';
+import * as M from '../src/sound/mapping.js';
 
 const base = { hue: 0, sat: 0, sharp: 0.5, contrast: 0.8, angle: 30, cx: 0.5, cy: 1, w: 0.3, h: 0.3, family: 'line' };
 

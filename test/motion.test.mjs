@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createMotion, greyOf } from '../src/motion.js';
+import { createMotion, greyOf } from '../src/track/motion.js';
 import { applyH, fitH, invH, mulH, scaleH } from '../src/homography.js';
-import { createTracker, warpRegion } from '../src/tracker.js';
+import { createTracker, warpRegion } from '../src/track/tracker.js';
 import * as S from './synth.mjs';
 
 const W = 192;

@@ -9,10 +9,10 @@
 // Coordinates are design px (1800 × 2546, A-series ratio); `scale` renders
 // larger, e.g. 2 for a print test sheet. Colours are palette names or CSS.
 
-import { mod, rng, TO_RAD } from './util.js';
+import { mod, rng, TO_RAD } from '../util.js';
 import { qrCode } from './qr.js';
 
-export const POSTER_URL = new URL('../poster/poster.json', import.meta.url).href;
+export const POSTER_URL = new URL('../../poster/poster.json', import.meta.url).href;
 const MONO = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
 const RAD = TO_RAD;
 

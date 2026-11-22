@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDetector } from '../src/detector.js';
+import { createDetector } from '../src/detect/detector.js';
 import { applyH, invH, mulH } from '../src/homography.js';
-import { simpleRatio } from '../src/mapping.js';
+import { simpleRatio } from '../src/sound/mapping.js';
 import * as S from './synth.mjs';
 
 const W = 192;
