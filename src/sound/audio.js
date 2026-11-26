@@ -23,6 +23,9 @@ export class AudioEngine {
     this.t0 = 0;
     this.timer = null;
     this.volume = 0.9;
+    this.muted = false; // the output faded to 0 (page hidden)
+    this.broken = false; // the context no longer works: make a new one on the next tap
+    this.watched = null;
   }
 
   /** Must be called synchronously inside a user gesture (iOS). */
@@ -106,9 +109,9 @@ export class AudioEngine {
   get now() {
     return this.ctx ? this.ctx.currentTime : 0;
   }
-  /** Whether sound comes out (false: not started, suspended, or — iOS — interrupted). */
+  /** Whether sound comes out (false: not started, suspended, — iOS — interrupted, or broken). */
   get running() {
-    return !!this.ctx && this.ctx.state === 'running';
+    return !!this.ctx && this.ctx.state === 'running' && !this.broken;
   }
   get beat() {
     return 60 / this.bpm;
@@ -135,7 +138,7 @@ export class AudioEngine {
 
   setVolume(v) {
     this.volume = v;
-    if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+    if (this.master && !this.muted) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
   }
 
   /** Beats since start (fractional), for the HUD. */
@@ -539,15 +542,94 @@ export class AudioEngine {
     v.drone.lfo.frequency.setValueAtTime(1 / (v.spec.lfoBeats * this.beat), now);
   }
 
+  // The output to 0 (or back to the volume) — quickly, without a click.
+  _mute(on) {
+    this.muted = on;
+    if (!this.master) return;
+    const g = this.master.gain;
+    const t = this.ctx.currentTime;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(on ? 0 : this.volume, t + (on ? 0.03 : 0.15));
+  }
+
+  // Page hidden (or going away). Silence first, then stop: stopped in the
+  // middle of a note — by us, or by iOS taking the sound away when the app
+  // goes to the background or is closed — the last few milliseconds can
+  // keep sounding as a whine. So the output goes to 0 first; if the page
+  // is frozen before the timer, it is silence that iOS stops.
   suspend() {
-    this.held = true; // on purpose (page hidden): _tick leaves it stopped
-    if (this.ctx && this.ctx.state === 'running') this.ctx.suspend();
+    this.held = true; // on purpose: _tick leaves it stopped
+    const ctx = this.ctx;
+    if (!ctx) return;
+    this._mute(true);
+    setTimeout(() => {
+      if (!this.held || this.ctx !== ctx || ctx.state !== 'running') return;
+      const p = ctx.suspend();
+      if (p && p.catch) p.catch(() => {});
+    }, 60);
   }
   resumeContext() {
     this.held = false;
-    if (this.ctx && this.ctx.state !== 'running') {
+    if (!this.ctx) return;
+    if (this.muted) this._mute(false); // ramps up once the clock runs again
+    if (this.ctx.state !== 'running') {
       const p = this.ctx.resume();
       if (p && p.catch) p.catch(() => {});
     }
+  }
+
+  /**
+   * Called on every frame while the page is shown. iOS, back from the
+   * background, can leave the context "running" with its clock standing
+   * still (no sound), or never let it run again. Either way it does not
+   * come back by itself — only a reload helped: say it is broken, and the
+   * next tap makes a new one (revive).
+   */
+  watch(nowMs = performance.now()) {
+    const ctx = this.ctx;
+    if (!ctx || this.held) {
+      this.watched = null;
+      return;
+    }
+    const w = (this.watched ??= { t: ctx.currentTime, at: nowMs, since: nowMs });
+    if (ctx.state === 'running') {
+      w.since = nowMs;
+      if (ctx.currentTime !== w.t) {
+        w.t = ctx.currentTime;
+        w.at = nowMs;
+        this.broken = false;
+      } else if (nowMs - w.at > 1000) {
+        this.broken = true; // "running", but its clock stands still
+      }
+    } else {
+      w.at = nowMs;
+      if (nowMs - w.since > 1500) this.broken = true; // asked to run, and it does not
+    }
+  }
+
+  /**
+   * A new context in place of one that does not work any more. Must be
+   * called synchronously inside a user gesture (iOS). The voices go; the
+   * loops start again with the next analysis.
+   */
+  revive() {
+    const old = this.ctx;
+    for (const v of [...this.voices.values()]) this._remove(v);
+    this.events = [];
+    this.ctx = null;
+    this.master = null;
+    try {
+      const p = old && old.close();
+      if (p && p.catch) p.catch(() => {});
+    } catch {
+      /* already closed */
+    }
+    this.broken = false;
+    this.watched = null;
+    this.held = false;
+    this.muted = false;
+    this.unlock();
+    if (this.timer) this.t0 = this.ctx.currentTime + 0.1;
   }
 }

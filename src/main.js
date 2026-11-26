@@ -251,6 +251,7 @@ function loop(ts) {
   state.now = ts;
   const [vw, vh] = viewSize();
   if (vw !== state.W || vh !== state.H) layout(); // rotation, URL bar, etc.
+  audio.watch(ts); // a context iOS broke in the background: noticed here, made anew on a tap
   const src = state.source;
   if (!src) return;
   // An error in one frame (an odd frame size, a browser quirk) must not stop
@@ -523,6 +524,9 @@ document.addEventListener('visibilitychange', () => {
     requestWakeLock();
   }
 });
+// leaving (closed from the app switcher, another page): silence first, so
+// nothing is left sounding when the phone stops the page
+window.addEventListener('pagehide', () => audio.suspend());
 // back from the browser's page cache (the back button, iOS restoring the
 // tab): the camera has usually been stopped — the frame loop notices
 window.addEventListener('pageshow', (e) => {
@@ -537,7 +541,12 @@ $('#btn-demo').addEventListener('click', () => start('demo'));
 // a tap anywhere brings back sound that iOS stopped (inside a gesture it
 // always may)
 document.addEventListener('pointerdown', () => {
-  if (state.running && !audio.running) audio.resumeContext();
+  if (state.running && !audio.running) {
+    // a context that did not come back (iOS) is made anew — only a reload
+    // helped before; one that is only stopped is started again
+    if (audio.broken) audio.revive();
+    else audio.resumeContext();
+  }
   // the camera stopped: inside a tap the phone allows more — try now
   const src = state.source;
   if (state.paused && src && src.kind === 'camera') {
