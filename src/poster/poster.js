@@ -370,9 +370,76 @@ function rowXs(el, unit) {
   return xs;
 }
 
+// Text spacing is in 1/1000 em, as in Illustrator: `tracking` opens (or,
+// negative, closes) every gap of the element; `kern["line:i"]` adds to the
+// one gap after character i of that line (pair kerning). No spacing at
+// all draws each line in one go, as before.
+const textFont = (el) => `${el.weight} ${el.size}px ${MONO}`;
+const hasSpacing = (el) => !!el.tracking || (!!el.kern && Object.keys(el.kern).length > 0);
+
+// Where each character sits: per line, its baseline y and every
+// character's x and advance w, in design px. A character's x is the width
+// of the text before it, so the font's own spacing is kept.
+export function textLayout(g, el) {
+  const em = el.size / 1000;
+  g.save();
+  g.font = textFont(el);
+  const lines = el.lines.map((line, li) => {
+    let text = '';
+    let before = 0;
+    let extra = 0;
+    const chars = Array.from(line).map((ch, i) => {
+      if (i > 0) extra += ((el.tracking || 0) + (el.kern?.[`${li}:${i - 1}`] || 0)) * em;
+      text += ch;
+      const after = g.measureText(text).width;
+      const c = { ch, x: el.x + before + extra, w: after - before };
+      before = after;
+      return c;
+    });
+    return { y: el.y + li * el.leading, chars };
+  });
+  g.restore();
+  return lines;
+}
+
+// Keep each pair kerning on the same two characters when the text is
+// edited. The edit is read as one replaced run between an unchanged head
+// and tail (what typing or pasting in one place does); a pair that the
+// edit split or removed is dropped. Returns undefined when none is left.
+export function remapKern(kern, oldLines, newLines) {
+  if (!kern) return undefined;
+  const a = Array.from(oldLines.join('\n'));
+  const b = Array.from(newLines.join('\n'));
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const starts = (cs) => cs.reduce((s, c, i) => (c === '\n' ? [...s, i + 1] : s), [0]);
+  const sa = starts(a);
+  const sb = starts(b);
+  const out = [];
+  for (const [key, v] of Object.entries(kern)) {
+    const [li, i] = key.split(':').map(Number);
+    if (!(li >= 0 && li < sa.length && i >= 0) || !v) continue;
+    const k = sa[li] + i; // the gap between characters k and k + 1 of the whole text
+    const lineEnd = li + 1 < sa.length ? sa[li + 1] - 1 : a.length;
+    if (k + 1 >= lineEnd) continue;
+    let nk;
+    if (k + 1 < head) nk = k;
+    else if (k >= a.length - tail) nk = k + b.length - a.length;
+    else continue;
+    let nl = sb.length - 1;
+    while (sb[nl] > nk) nl--;
+    out.push([nl, nk - sb[nl], v]);
+  }
+  out.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  return out.length ? Object.fromEntries(out.map(([l, i, v]) => [`${l}:${i}`, v])) : undefined;
+}
+
 // --------------------------------------------------------------------------
 // field descriptions (for the editor). `when` hides a field that does not
-// apply; dotted keys reach into nested objects.
+// apply; dotted keys reach into nested objects; `optional` fields may be
+// missing, and `def` is what the editor shows for a missing one.
 
 const F = {
   num: (key, label, step = 1, min, max) => ({ key, label, type: 'number', step, min, max }),
@@ -570,20 +637,30 @@ export const TYPES = {
     label: '文字',
     draw(g, el, ctx) {
       g.fillStyle = ctx.color(el.color);
-      g.font = `${el.weight} ${el.size}px ${MONO}`;
-      el.lines.forEach((line, i) => g.fillText(line, el.x, el.y + i * el.leading));
+      g.font = textFont(el);
+      if (!hasSpacing(el)) {
+        el.lines.forEach((line, i) => g.fillText(line, el.x, el.y + i * el.leading));
+        return;
+      }
+      for (const line of textLayout(g, el)) for (const c of line.chars) g.fillText(c.ch, c.x, line.y);
     },
     bounds(el, g) {
-      g.save();
-      g.font = `${el.weight} ${el.size}px ${MONO}`;
-      const w = Math.max(0, ...el.lines.map((l) => g.measureText(l).width));
-      g.restore();
+      let w = 0;
+      if (hasSpacing(el)) {
+        for (const { chars } of textLayout(g, el)) if (chars.length) w = Math.max(w, chars.at(-1).x + chars.at(-1).w - el.x);
+      } else {
+        g.save();
+        g.font = textFont(el);
+        w = Math.max(0, ...el.lines.map((l) => g.measureText(l).width));
+        g.restore();
+      }
       return box(el.x, el.y - el.size, el.x + w, el.y + (el.lines.length - 1) * el.leading + el.size * 0.3);
     },
     fields: [
       ...XY, { key: 'lines', label: '本文', type: 'lines' },
       F.num('size', '文字の大きさ', 0.5, 4), { key: 'weight', label: '太さ', type: 'select', options: [400, 500, 700] },
-      F.num('leading', '行送り', 0.5), F.color('color'),
+      F.num('leading', '行送り', 0.5), { ...F.num('tracking', '字間（1/1000 em）', 10), optional: true, def: 0 },
+      F.color('color'),
     ],
     make: () => ({ type: 'text', x: -200, y: 0, size: 19, weight: 500, leading: 30, color: 'ink', lines: ['text'] }),
   },

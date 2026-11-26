@@ -7,7 +7,7 @@
 
 import {
   TYPES, paint, drawPoster, loadPoster, boundsOf, moveElement, createElement, context, drawElement, debrisPieces,
-  PATTERN_DEFAULTS, SHAPE_DEFAULTS, POSTER_URL,
+  textLayout, remapKern, PATTERN_DEFAULTS, SHAPE_DEFAULTS, POSTER_URL,
 } from '../../src/poster/poster.js';
 import { createDetector } from '../../src/detect/detector.js';
 import { distanceField, scatterPieces } from './scatter.js';
@@ -28,6 +28,7 @@ const st = {
   undo: [],
   redo: [],
   drag: null,
+  caret: null, // pair kerning: { i: element index, line, gap } (gap = after character `gap`)
   scope: { on: false, pinned: false, x: 900, y: 1200, s: 600, result: null, busy: false, stale: true },
 };
 
@@ -168,6 +169,19 @@ function paintOverlay() {
     outline(el, '#D7262B', [7, 4]);
   }
 
+  const cr = caretAt();
+  if (cr) {
+    og.strokeStyle = '#D7262B';
+    og.fillStyle = '#D7262B';
+    og.lineWidth = 2 * px;
+    og.beginPath();
+    og.moveTo(cr.x, cr.y - cr.el.size * 0.95);
+    og.lineTo(cr.x, cr.y + cr.el.size * 0.25);
+    og.stroke();
+    og.font = `500 ${12 * px}px "IBM Plex Mono", monospace`;
+    og.fillText(cr.value > 0 ? `+${cr.value}` : String(cr.value), cr.x + 3 * px, cr.y - cr.el.size * 0.95 - 3 * px);
+  }
+
   if (st.scope.on) paintScope(px);
 }
 
@@ -206,6 +220,7 @@ function renderLayers() {
 }
 
 function select(i) {
+  if (i !== st.sel) st.caret = null;
   st.sel = i;
   renderLayers();
   renderPanel();
@@ -236,6 +251,7 @@ function renderPanel() {
     form.append(fieldRow(el, f));
   }
   if (el.type === 'debris') form.append(debrisActions(el));
+  if (el.type === 'text') form.append(kernActions(el));
 }
 
 function fieldRow(el, f) {
@@ -259,7 +275,7 @@ function fieldRow(el, f) {
       input.step = f.step ?? 1;
       if (f.min != null) input.min = f.min;
       if (f.max != null) input.max = f.max;
-      input.value = v ?? '';
+      input.value = v ?? f.def ?? '';
       input.addEventListener('input', () => {
         if (input.value === '' || !Number.isFinite(+input.value)) return;
         commit(+input.value);
@@ -287,7 +303,17 @@ function fieldRow(el, f) {
     case 'lines': {
       input = document.createElement('textarea');
       input.value = (v || []).join('\n');
-      input.addEventListener('input', () => commit(input.value.split('\n')));
+      input.addEventListener('input', () => {
+        const lines = input.value.split('\n');
+        willChange(key);
+        // pair kerning stays on its two characters
+        if (el.kern) {
+          el.kern = remapKern(el.kern, getPath(el, f.key) || [], lines);
+          if (!el.kern) delete el.kern;
+        }
+        setPath(el, f.key, lines);
+        changed();
+      });
       break;
     }
     case 'bool': {
@@ -487,6 +513,10 @@ overlay.addEventListener('pointerdown', (e) => {
     return;
   }
   const i = hitTest(p);
+  if (caretAt() && i === st.sel) {
+    placeCaret(selEl(), p); // kerning: a click moves the caret, it does not drag
+    return;
+  }
   select(i);
   if (i < 0) return;
   overlay.setPointerCapture(e.pointerId);
@@ -533,6 +563,10 @@ overlay.addEventListener('pointerleave', () => {
   st.hover = -1;
   requestPaint();
 });
+overlay.addEventListener('dblclick', (e) => {
+  const el = selEl();
+  if (!st.scope.on && el?.type === 'text') placeCaret(el, toDesign(e));
+});
 
 function moveSelected(dx, dy, alone = false) {
   const el = selEl();
@@ -566,6 +600,10 @@ window.addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'd') {
     e.preventDefault();
     duplicate();
+    return;
+  }
+  if (caretAt() && caretKey(e)) {
+    e.preventDefault();
     return;
   }
   if (!selEl()) return;
@@ -628,6 +666,129 @@ function add(type) {
   st.spec.elements.push(el);
   st.sel = st.spec.elements.length - 1;
   changed({ structure: true });
+}
+
+// ---------------------------------------------------------------- text: pair kerning
+
+// lines that have a gap (two characters or more), and where a gap is drawn
+const gapped = (lines) => lines.flatMap((l, i) => (l.chars.length > 1 ? [i] : []));
+const gapX = (chars, i) => (chars[i].x + chars[i].w + chars[i + 1].x) / 2;
+
+function nearestGap(chars, x) {
+  let best = 0;
+  for (let i = 1; i < chars.length - 1; i++) if (Math.abs(gapX(chars, i) - x) < Math.abs(gapX(chars, best) - x)) best = i;
+  return best;
+}
+
+// The caret in the selected text, kept inside its lines (undo or editing
+// the text can shorten them); null when there is none.
+function caretAt() {
+  const el = selEl();
+  if (!st.caret || st.caret.i !== st.sel || el?.type !== 'text') return null;
+  const lines = textLayout(g, el);
+  const ok = gapped(lines);
+  if (!ok.length) return null;
+  const want = st.caret.line;
+  const line = ok.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a));
+  const { chars, y } = lines[line];
+  const gap = Math.max(0, Math.min(st.caret.gap, chars.length - 2));
+  Object.assign(st.caret, { line, gap });
+  return { el, lines, line, gap, x: gapX(chars, gap), y, value: el.kern?.[`${line}:${gap}`] || 0 };
+}
+
+// the caret in the gap nearest to p
+function placeCaret(el, p) {
+  const lines = textLayout(g, el);
+  const ok = gapped(lines);
+  if (!ok.length) return;
+  const mid = (i) => lines[i].y - el.size * 0.35;
+  const line = ok.reduce((a, b) => (Math.abs(mid(b) - p.y) < Math.abs(mid(a) - p.y) ? b : a));
+  st.caret = { i: st.sel, line, gap: nearestGap(lines[line].chars, p.x) };
+  requestPaint();
+}
+
+// one gap's kerning; 0 removes it (kept in reading order for tidy diffs)
+function setKern(el, key, value) {
+  const kern = { ...el.kern, [key]: value };
+  const order = (k) => k.split(':').map(Number);
+  const keys = Object.keys(kern).filter((k) => kern[k]).sort((a, b) => order(a)[0] - order(b)[0] || order(a)[1] - order(b)[1]);
+  if (keys.length) el.kern = Object.fromEntries(keys.map((k) => [k, kern[k]]));
+  else delete el.kern;
+}
+
+// Keys while the caret is shown; true when used. ⌥←/⌥→ kern by 10/1000 em
+// (100 with ⇧), ←→↑↓ move the caret, Delete sets the gap back to 0 (it
+// never deletes the element here), Esc ends.
+function caretKey(e) {
+  const cr = caretAt();
+  const { el, lines, line, gap } = cr;
+  const key = `${line}:${gap}`;
+  const ok = gapped(lines);
+  const k = ok.indexOf(line);
+  switch (e.key) {
+    case 'Escape':
+      st.caret = null;
+      break;
+    case 'Delete':
+    case 'Backspace':
+      if (!cr.value) break;
+      willChange();
+      setKern(el, key, 0);
+      changed({ panel: true });
+      break;
+    case 'ArrowLeft':
+    case 'ArrowRight': {
+      const d = e.key === 'ArrowLeft' ? -1 : 1;
+      if (e.altKey) {
+        willChange(`kern:${st.sel}:${key}`);
+        setKern(el, key, cr.value + d * (e.shiftKey ? 100 : 10));
+        changed({ panel: true });
+      } else if (gap + d >= 0 && gap + d <= lines[line].chars.length - 2) {
+        st.caret.gap = gap + d;
+      } else if (ok[k + d] != null) {
+        const next = ok[k + d];
+        Object.assign(st.caret, { line: next, gap: d < 0 ? lines[next].chars.length - 2 : 0 });
+      }
+      break;
+    }
+    case 'ArrowUp':
+    case 'ArrowDown': {
+      const next = ok[k + (e.key === 'ArrowUp' ? -1 : 1)];
+      if (next != null) Object.assign(st.caret, { line: next, gap: nearestGap(lines[next].chars, cr.x) });
+      break;
+    }
+    default:
+      return false;
+  }
+  requestPaint();
+  return true;
+}
+
+function kernActions(el) {
+  const box = document.createElement('div');
+  box.className = 'actions';
+  const note = document.createElement('p');
+  note.className = 'hint';
+  note.textContent = 'ペアカーニング：紙面の文字をダブルクリックすると、文字の間にカーソルが出ます。'
+    + '⌥← ⌥→ でその間を 10 ずつ詰める／空ける（⇧ も押すと 100）。← → ↑ ↓ でカーソルを動かし、'
+    + 'Delete でその間を 0 に戻し、Esc で終わります。カーソルが出ている間、文字はドラッグで動きません。';
+  box.append(note);
+  const n = Object.keys(el.kern || {}).length;
+  if (n) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const b = document.createElement('button');
+    b.type = 'button'; // inside the form: not a submit
+    b.textContent = `ペアカーニングを消す（${n} か所）`;
+    b.addEventListener('click', () => {
+      willChange();
+      delete el.kern;
+      changed({ panel: true });
+    });
+    row.append(b);
+    box.append(row);
+  }
+  return box;
 }
 
 // ---------------------------------------------------------------- debris: split it, scatter it into the gaps
