@@ -79,12 +79,65 @@ export function createElement(type, x, y) {
 // --------------------------------------------------------------------------
 // helpers
 
+// (to 1/100 px: snapping moves by fractions, and sums of them would
+// otherwise leave 417.20000000000005 in the file)
 function moveXY(el, dx, dy) {
-  el.x += dx;
-  el.y += dy;
+  el.x = r2(el.x + dx);
+  el.y = r2(el.y + dy);
 }
 
 const box = (x0, y0, x1, y1) => ({ x0, y0, x1, y1 });
+
+// (x, y) turned by deg (clockwise on the page, as canvas rotate) about (cx, cy)
+function turn(x, y, deg, cx, cy) {
+  const a = deg * RAD;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return [cx + (x - cx) * c - (y - cy) * s, cy + (x - cx) * s + (y - cy) * c];
+}
+const r2 = (v) => Math.round(v * 100) / 100 || 0; // (never −0)
+const turnTo = (o, kx, ky, deg, cx, cy) => {
+  [o[kx], o[ky]] = turn(o[kx], o[ky], deg, cx, cy).map(r2);
+};
+const addDeg = (a, d) => r2((a || 0) + d);
+
+// the box around the box b turned by deg about (cx, cy)
+function turnBox(b, deg, cx, cy) {
+  if (!deg) return b;
+  const ps = [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]].map(([x, y]) => turn(x, y, deg, cx, cy));
+  const xs = ps.map((p) => p[0]);
+  const ys = ps.map((p) => p[1]);
+  return box(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys));
+}
+
+// The point an element turns about when its own rotation changes.
+export function rotationCentre(el, g, ctx) {
+  if (el.type === 'rect') return [el.x + el.w / 2, el.y + el.h / 2];
+  if (el.type === 'repeat') return repeatCentre(el);
+  if (el.x != null && (el.type === 'pattern' || el.type === 'piece')) return [el.x, el.y];
+  const b = boundsOf(el, g, ctx);
+  return b ? [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2] : [0, 0];
+}
+
+// Turn an element by deg about (cx, cy), as when what it follows turns: it
+// goes round with it, and what can turn (patterns, rectangles, arcs…) turns
+// by as much. Text stays level: only its place goes round.
+export function rotateElement(el, deg, cx, cy, g, ctx) {
+  const T = TYPES[el.type];
+  if (!T || !deg) return;
+  if (T.rotate) {
+    T.rotate(el, deg, cx, cy, g, ctx);
+    return;
+  }
+  const b = boundsOf(el, g, ctx);
+  if (!b) return;
+  const mx = (b.x0 + b.x1) / 2;
+  const my = (b.y0 + b.y1) / 2;
+  const [nx, ny] = turn(mx, my, deg, cx, cy);
+  moveElement(el, r2(nx - mx), r2(ny - my));
+}
+
+const repeatCentre = (el) => [el.x + (el.child.x || 0) + ((el.nx - 1) * el.dx) / 2, el.y + (el.child.y || 0) + ((el.ny - 1) * el.dy) / 2];
 
 // --------------------------------------------------------------------------
 // debris pieces: { shape, x, y, r, rotation (°), color }
@@ -504,20 +557,35 @@ export const TYPES = {
     label: '模様の図形',
     draw: drawPattern,
     bounds(el) {
-      const R = SHAPES[el.shape.kind].radius(el.shape);
-      if (el.shape.kind === 'rect' && !el.rotation) {
-        return box(el.x - el.shape.w / 2, el.y - el.shape.h / 2, el.x + el.shape.w / 2, el.y + el.shape.h / 2);
+      const s = el.shape;
+      if (s.kind === 'rect') return turnBox(box(el.x - s.w / 2, el.y - s.h / 2, el.x + s.w / 2, el.y + s.h / 2), el.rotation, el.x, el.y);
+      if (s.kind === 'polygon') {
+        const ps = s.points.map(([px, py]) => turn(el.x + px, el.y + py, el.rotation || 0, el.x, el.y));
+        return box(Math.min(...ps.map((p) => p[0])), Math.min(...ps.map((p) => p[1])), Math.max(...ps.map((p) => p[0])), Math.max(...ps.map((p) => p[1])));
       }
+      const R = SHAPES[s.kind].radius(s);
       return box(el.x - R, el.y - R, el.x + R, el.y + R);
+    },
+    rotate(el, deg, cx, cy) {
+      turnTo(el, 'x', 'y', deg, cx, cy);
+      el.rotation = addDeg(el.rotation, deg);
     },
     fields: PATTERN_FIELDS,
     make: () => ({ type: 'pattern', x: 0, y: 0, rotation: 0, shape: { ...SHAPE_DEFAULTS.circle }, fill: '',
       pattern: { ...PATTERN_DEFAULTS.stripes }, outline: { width: 0, color: 'ink' } }),
   },
 
+  // the same pattern on a grid; `rotation` turns the whole grid about its
+  // middle, the child's own rotation each copy
   repeat: {
     label: '図形の繰り返し',
     draw(g, el, ctx) {
+      if (el.rotation) {
+        const [px, py] = repeatCentre(el);
+        g.translate(px, py);
+        g.rotate(el.rotation * RAD);
+        g.translate(-px, -py);
+      }
       for (let j = 0; j < el.ny; j++) {
         for (let i = 0; i < el.nx; i++) {
           g.save();
@@ -529,13 +597,22 @@ export const TYPES = {
     },
     bounds(el, g, ctx) {
       const b = TYPES[el.child.type].bounds(el.child, g, ctx);
-      return box(el.x + b.x0, el.y + b.y0, el.x + b.x1 + (el.nx - 1) * el.dx, el.y + b.y1 + (el.ny - 1) * el.dy);
+      const all = box(el.x + b.x0, el.y + b.y0, el.x + b.x1 + (el.nx - 1) * el.dx, el.y + b.y1 + (el.ny - 1) * el.dy);
+      return turnBox(all, el.rotation, ...repeatCentre(el));
+    },
+    rotate(el, deg, cx, cy) {
+      const [px, py] = repeatCentre(el);
+      const [nx, ny] = turn(px, py, deg, cx, cy);
+      el.x = r2(el.x + nx - px);
+      el.y = r2(el.y + ny - py);
+      el.rotation = addDeg(el.rotation, deg);
     },
     fields: [
-      ...XY,
+      ...XY, { ...F.num('rotation', '全体の回転°'), optional: true, def: 0 },
       F.num('nx', '横の数', 1, 1), F.num('ny', '縦の数', 1, 1), F.num('dx', '横の間隔'), F.num('dy', '縦の間隔'),
       ...PATTERN_FIELDS.filter((f) => f.key !== 'x' && f.key !== 'y').map((f) => ({
         ...f, key: 'child.' + f.key, when: f.when && ((el) => f.when(el.child)),
+        ...(f.key === 'rotation' ? { label: '1 個ずつの回転°' } : {}),
       })),
     ],
     make: () => ({ type: 'repeat', x: 0, y: 0, nx: 3, ny: 3, dx: 124, dy: 124, child: { ...TYPES.pattern.make(),
@@ -577,7 +654,13 @@ export const TYPES = {
         g.fillRect(el.x, el.y, el.w, el.h);
       }
     },
-    bounds: (el) => box(el.x, el.y, el.x + el.w, el.y + el.h),
+    bounds: (el) => turnBox(box(el.x, el.y, el.x + el.w, el.y + el.h), el.rotation, el.x + el.w / 2, el.y + el.h / 2),
+    rotate(el, deg, cx, cy) {
+      const [mx, my] = turn(el.x + el.w / 2, el.y + el.h / 2, deg, cx, cy);
+      el.x = r2(mx - el.w / 2);
+      el.y = r2(my - el.h / 2);
+      el.rotation = addDeg(el.rotation, deg);
+    },
     fields: [...XY, F.num('w', '幅'), F.num('h', '高さ'), F.num('rotation', '回転°'), F.color('color')],
     make: () => ({ type: 'rect', x: -150, y: -50, w: 300, h: 100, rotation: 0, color: 'ink' }),
   },
@@ -592,6 +675,13 @@ export const TYPES = {
       g.fill();
     },
     bounds: (el) => box(el.x - el.r, el.y - el.r, el.x + el.r, el.y + el.r),
+    rotate(el, deg, cx, cy) {
+      turnTo(el, 'x', 'y', deg, cx, cy);
+      if ((el.end - el.start) % 360 !== 0) {
+        el.start = addDeg(el.start, deg);
+        el.end = addDeg(el.end, deg);
+      }
+    },
     fields: [...XY, F.num('r', '半径'), F.num('start', '開始角°'), F.num('end', '終了角°'), F.color('color')],
     make: () => ({ type: 'disc', x: 0, y: 0, r: 80, start: 0, end: 360, color: 'red' }),
   },
@@ -607,6 +697,11 @@ export const TYPES = {
       g.stroke();
     },
     bounds: (el) => box(el.x - el.r, el.y - el.r, el.x + el.r, el.y + el.r),
+    rotate(el, deg, cx, cy) {
+      turnTo(el, 'x', 'y', deg, cx, cy);
+      el.start = addDeg(el.start, deg);
+      el.end = addDeg(el.end, deg);
+    },
     fields: [...XY, F.num('r', '半径'), F.num('start', '開始角°'), F.num('end', '終了角°'), F.num('width', '太さ', 0.5), F.color('color')],
     make: () => ({ type: 'arc', x: 0, y: 0, r: 120, start: 180, end: 300, width: 4, color: 'ink' }),
   },
@@ -624,10 +719,14 @@ export const TYPES = {
     },
     bounds: (el) => box(Math.min(el.x0, el.x1) - 6, Math.min(el.y0, el.y1) - 6, Math.max(el.x0, el.x1) + 6, Math.max(el.y0, el.y1) + 6),
     move(el, dx, dy) {
-      el.x0 += dx;
-      el.x1 += dx;
-      el.y0 += dy;
-      el.y1 += dy;
+      el.x0 = r2(el.x0 + dx);
+      el.x1 = r2(el.x1 + dx);
+      el.y0 = r2(el.y0 + dy);
+      el.y1 = r2(el.y1 + dy);
+    },
+    rotate(el, deg, cx, cy) {
+      turnTo(el, 'x0', 'y0', deg, cx, cy);
+      turnTo(el, 'x1', 'y1', deg, cx, cy);
     },
     fields: [F.num('x0', 'x0'), F.num('y0', 'y0'), F.num('x1', 'x1'), F.num('y1', 'y1'), F.num('width', '太さ', 0.5), F.color('color')],
     make: () => ({ type: 'line', x0: -200, y0: 0, x1: 200, y1: 0, width: 3, color: 'ink' }),
@@ -688,6 +787,15 @@ export const TYPES = {
       const w = g.measureText(el.text).width;
       g.restore();
       return box(el.x, el.y - 17, el.x + w, el.y + 5);
+    },
+    rotate(el, deg, cx, cy, g) {
+      const b = TYPES.caption.bounds(el, g);
+      const mx = (b.x0 + b.x1) / 2;
+      const my = (b.y0 + b.y1) / 2;
+      const [nx, ny] = turn(mx, my, deg, cx, cy);
+      el.x = r2(el.x + nx - mx);
+      el.y = r2(el.y + ny - my);
+      if (el.lx != null) turnTo(el, 'lx', 'ly', deg, cx, cy);
     },
     fields: [
       ...XY, F.text('text', '文'), { key: 'leader', label: '引き出し線', type: 'bool' },
@@ -772,6 +880,10 @@ export const TYPES = {
       if (el.shape === 'disc' || (el.shape === 'tri' && !el.rotation)) return box(el.x - el.r, el.y - el.r, el.x + el.r, el.y + el.r);
       const c = pieceCircle(el);
       return box(c.x - c.R, c.y - c.R, c.x + c.R, c.y + c.R);
+    },
+    rotate(el, deg, cx, cy) {
+      turnTo(el, 'x', 'y', deg, cx, cy);
+      el.rotation = addDeg(el.rotation, deg);
     },
     fields: [
       ...XY, { key: 'shape', label: '形', type: 'select', options: PIECE_SHAPES }, F.num('r', '大きさ', 0.5, 1),

@@ -24,8 +24,10 @@
       <label>表示 <select id="zoom">
         <option value="fit">全体</option><option value="0.25">25%</option>
         <option value="0.5">50%</option><option value="1">100%</option>
+        <option value="2">200%</option><option value="4">400%</option>
       </select></label>
       <label><input type="checkbox" id="ugrid"> u グリッド</label>
+      <label title="ドラッグで、ほかの要素や紙面の端・中央にそろう位置に吸い付く（⌘ を押している間は切れる）"><input type="checkbox" id="snap" checked> スナップ</label>
     </span>
     <span class="group">
       <label><input type="checkbox" id="scope"> カメラで見る</label>
@@ -52,9 +54,23 @@
       <button id="dup" title="⌘D">複製</button>
       <button id="del" title="Delete">削除</button>
     </div>
+    <div class="row align">
+      <span class="hint">整列</span>
+      <button class="icon" data-align="left" title="左端をそろえる（1 つだけのときは紙面に）"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 1v14"/><rect x="4" y="3" width="10" height="3"/><rect x="4" y="10" width="6" height="3"/></svg></button>
+      <button class="icon" data-align="centre" title="左右の中央をそろえる（1 つだけのときは紙面に）"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v14"/><rect x="2" y="3" width="12" height="3"/><rect x="4" y="10" width="8" height="3"/></svg></button>
+      <button class="icon" data-align="right" title="右端をそろえる（1 つだけのときは紙面に）"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M14 1v14"/><rect x="2" y="3" width="10" height="3"/><rect x="6" y="10" width="6" height="3"/></svg></button>
+      <button class="icon" data-align="top" title="上端をそろえる（1 つだけのときは紙面に）"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 2h14"/><rect x="3" y="4" width="3" height="10"/><rect x="10" y="4" width="3" height="6"/></svg></button>
+      <button class="icon" data-align="middle" title="上下の中央をそろえる（1 つだけのときは紙面に）"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h14"/><rect x="3" y="2" width="3" height="12"/><rect x="10" y="4" width="3" height="8"/></svg></button>
+      <button class="icon" data-align="bottom" title="下端をそろえる（1 つだけのときは紙面に）"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 14h14"/><rect x="3" y="2" width="3" height="10"/><rect x="10" y="6" width="3" height="6"/></svg></button>
+    </div>
     <p class="hint">
-      クリックで選択、ドラッグで移動（連動する注記もついてくる。⌥ で単独、⇧ で u 単位）。
-      矢印キーで 1px（⇧ で 10px）。
+      クリックで選択（⇧ で選択に足す・外す）、ドラッグで移動（連動する注記もついてくる。⌥ で単独、⇧ で u 単位）。
+      ドラッグ中は、ほかの要素や紙面の端・中央にそろう位置でピンクの線が出て吸い付く（⌘ で切れる）。
+      矢印キーで 1px（⇧ で 10px）。整列は、複数選ぶと互いに、1 つだけなら紙面にそろえる。
+    </p>
+    <p class="hint">
+      表示：2 本指のスワイプかホイールで移動、ピンチか ⌘＋ホイールで拡大・縮小。
+      スペース＋ドラッグや中ボタンのドラッグでも動かせる。⌘+ ⌘− で段階的に、⌘0 で全体、⌘1 で 100%。
     </p>
   </aside>
 

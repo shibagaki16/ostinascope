@@ -7,7 +7,7 @@
 
 import {
   TYPES, paint, drawPoster, loadPoster, boundsOf, moveElement, createElement, context, drawElement, debrisPieces,
-  textLayout, remapKern, PATTERN_DEFAULTS, SHAPE_DEFAULTS, POSTER_URL,
+  textLayout, remapKern, rotateElement, rotationCentre, PATTERN_DEFAULTS, SHAPE_DEFAULTS, POSTER_URL,
 } from '../../src/poster/poster.js';
 import { createDetector } from '../../src/detect/detector.js';
 import { distanceField, scatterPieces } from './scatter.js';
@@ -21,9 +21,17 @@ const og = overlay.getContext('2d');
 
 const st = {
   spec: null,
-  sel: -1,
+  sel: -1, // the element the panel shows (the last one clicked)
+  multi: [], // every selected element (indices; includes sel)
   hover: -1,
+  // the view: the sheet is drawn at `zoom` screen px per design px, its
+  // top-left corner at (ox, oy) in the work area; `fit` follows the window
   zoom: 0.3,
+  ox: 16,
+  oy: 16,
+  fit: true,
+  pan: null, // dragging the view: { x, y, ox, oy }
+  space: false, // space held: dragging moves the view
   dirty: false,
   undo: [],
   redo: [],
@@ -38,6 +46,13 @@ const W = () => st.spec.size[0];
 const H = () => st.spec.size[1];
 const ctx = () => context(st.spec);
 const selEl = () => st.spec.elements[st.sel] || null;
+const selection = () => st.multi.filter((i) => i >= 0 && i < st.spec.elements.length);
+const selEls = () => selection().map((i) => st.spec.elements[i]);
+// one element selected (or none: -1)
+function setSel(i) {
+  st.sel = i;
+  st.multi = i >= 0 ? [i] : [];
+}
 const nameOf = (el) => el.id || TYPES[el.type]?.label || el.type;
 
 function getPath(o, path) {
@@ -89,7 +104,8 @@ function restore(from, to) {
   if (!from.length) return;
   to.push(JSON.stringify(st.spec));
   st.spec = JSON.parse(from.pop());
-  if (st.sel >= st.spec.elements.length) st.sel = -1;
+  st.multi = selection();
+  if (!st.multi.includes(st.sel)) st.sel = st.multi.length ? st.multi.at(-1) : -1;
   lastKey = null;
   changed({ structure: true });
 }
@@ -107,30 +123,35 @@ function requestPaint() {
   });
 }
 
-function setZoom(z) {
-  const stage = $('#stage');
-  st.zoom = z === 'fit' ? Math.min((stage.clientHeight - 32) / H(), (stage.clientWidth - 32) / W()) : +z;
-  const dpr = window.devicePixelRatio || 1;
-  for (const c of [posterCv, overlay]) {
-    c.width = Math.round(W() * st.zoom * dpr);
-    c.height = Math.round(H() * st.zoom * dpr);
-    c.style.width = `${W() * st.zoom}px`;
-    c.style.height = `${H() * st.zoom}px`;
-  }
-  requestPaint();
-}
+const BG = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#e6e3dd';
+const dpr = () => window.devicePixelRatio || 1;
 
 function paintPoster() {
-  const k = st.zoom * (window.devicePixelRatio || 1);
-  g.setTransform(k, 0, 0, k, 0, 0);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = BG;
+  g.fillRect(0, 0, posterCv.width, posterCv.height);
+  const k = st.zoom * dpr();
+  g.setTransform(k, 0, 0, k, st.ox * dpr(), st.oy * dpr());
+  g.save();
+  g.shadowColor = 'rgba(0, 0, 0, 0.15)'; // the sheet (shadows ignore the transform: device px)
+  g.shadowBlur = 12 * dpr();
+  g.shadowOffsetY = 2 * dpr();
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, W(), H());
+  g.restore();
+  g.save();
+  g.beginPath();
+  g.rect(0, 0, W(), H()); // as on paper: nothing outside the sheet
+  g.clip();
   paint(g, st.spec);
+  g.restore();
 }
 
 function paintOverlay() {
-  const k = st.zoom * (window.devicePixelRatio || 1);
+  const k = st.zoom * dpr();
   og.setTransform(1, 0, 0, 1, 0, 0);
   og.clearRect(0, 0, overlay.width, overlay.height);
-  og.setTransform(k, 0, 0, k, 0, 0);
+  og.setTransform(k, 0, 0, k, st.ox * dpr(), st.oy * dpr());
   const px = 1 / st.zoom; // one screen pixel in design px
 
   if ($('#ugrid').checked) {
@@ -162,12 +183,17 @@ function paintOverlay() {
     og.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
     og.setLineDash([]);
   };
-  if (st.hover >= 0 && st.hover !== st.sel && !st.scope.on) outline(st.spec.elements[st.hover], 'rgba(31,79,209,0.7)', [4, 3]);
-  const el = selEl();
-  if (el) {
-    for (const o of linkedTo(el)) outline(o, 'rgba(215,38,43,0.5)', [2, 3]);
-    outline(el, '#D7262B', [7, 4]);
+  if (st.hover >= 0 && !st.multi.includes(st.hover) && !st.scope.on) outline(st.spec.elements[st.hover], 'rgba(31,79,209,0.7)', [4, 3]);
+  const sel = selEls();
+  for (const s of sel) for (const o of linkedTo(s)) if (!sel.includes(o)) outline(o, 'rgba(215,38,43,0.5)', [2, 3]);
+  for (const s of sel) outline(s, '#D7262B', s === selEl() ? [7, 4] : [3, 3]);
+  if (sel.length > 1) {
+    const b = unionBounds(sel);
+    og.strokeStyle = 'rgba(215,38,43,0.35)';
+    og.lineWidth = px;
+    og.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
   }
+  if (st.drag?.guides) paintGuides(st.drag.guides, px);
 
   const cr = caretAt();
   if (cr) {
@@ -185,18 +211,177 @@ function paintOverlay() {
   if (st.scope.on) paintScope(px);
 }
 
+// ---------------------------------------------------------------- view: zoom and pan
+//
+// The canvases fill the work area and the sheet is drawn into them at the
+// view's zoom and offset, so zooming far in costs no larger canvas.
+// Swipe / wheel moves the view, ⌘+wheel or a pinch zooms around the
+// pointer, space+drag or the middle button drags it; ⌘+ ⌘− zoom in steps,
+// ⌘0 shows the whole sheet, ⌘1 is 100% (as in Illustrator).
+
+const ZOOM_MIN = 0.05;
+const ZOOM_MAX = 8;
+const ZOOM_STEPS = [0.05, 0.1, 0.15, 0.25, 0.33, 0.5, 0.66, 1, 1.5, 2, 3, 4, 6, 8];
+const ZOOM_MENU = [0.25, 0.5, 1, 2, 4]; // the presets in the menu (index.html)
+
+function stageSize() {
+  const stage = $('#stage');
+  return { w: stage.clientWidth, h: stage.clientHeight };
+}
+
+// both canvases as large as the work area
+function resizeCanvases() {
+  const { w, h } = stageSize();
+  for (const c of [posterCv, overlay]) {
+    c.width = Math.round(w * dpr());
+    c.height = Math.round(h * dpr());
+    c.style.width = `${w}px`;
+    c.style.height = `${h}px`;
+  }
+}
+
+function viewChanged() {
+  showZoom();
+  requestPaint();
+}
+
+function fitView() {
+  const { w, h } = stageSize();
+  st.zoom = Math.min((w - 32) / W(), (h - 32) / H());
+  st.ox = (w - W() * st.zoom) / 2;
+  st.oy = (h - H() * st.zoom) / 2;
+  st.fit = true;
+  viewChanged();
+}
+
+// zoom to z, keeping what is under the work-area point (sx, sy) in place
+function zoomAt(z, sx, sy) {
+  z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  st.ox = sx - ((sx - st.ox) * z) / st.zoom;
+  st.oy = sy - ((sy - st.oy) * z) / st.zoom;
+  st.zoom = z;
+  st.fit = false;
+  viewChanged();
+}
+
+function zoomCentre(z) {
+  const { w, h } = stageSize();
+  zoomAt(z, w / 2, h / 2);
+}
+
+function zoomStep(dir) {
+  const z = dir > 0 ? ZOOM_STEPS.find((s) => s > st.zoom * 1.01) : ZOOM_STEPS.findLast((s) => s < st.zoom / 1.01);
+  if (z) zoomCentre(z);
+}
+
+function panBy(dx, dy) {
+  st.ox += dx;
+  st.oy += dy;
+  st.fit = false;
+  viewChanged();
+}
+
+// the menu: "全体（31%）", a preset, or the zoom as it is
+function setZoom(z) {
+  if (z === 'fit') fitView();
+  else if (z !== 'now') zoomCentre(+z);
+}
+function showZoom() {
+  const menu = $('#zoom');
+  const pct = `${Math.round(st.zoom * 100)}%`;
+  menu.querySelector('option[value="fit"]').textContent = st.fit ? `全体（${pct}）` : '全体';
+  const preset = ZOOM_MENU.find((z) => Math.abs(z - st.zoom) < 1e-6);
+  if (st.fit || preset) {
+    menu.value = st.fit ? 'fit' : String(preset);
+    return;
+  }
+  let now = menu.querySelector('option[value="now"]');
+  if (!now) {
+    now = new Option('', 'now');
+    now.hidden = true;
+    menu.prepend(now);
+  }
+  now.textContent = pct;
+  menu.value = 'now';
+}
+
+// work-area px of a pointer event
+function stagePoint(e) {
+  const r = overlay.getBoundingClientRect();
+  return { sx: e.clientX - r.left, sy: e.clientY - r.top };
+}
+
+let gesture = null; // Safari's pinch (it sends gestures, not ⌘+wheel)
+function wireView() {
+  const stage = $('#stage');
+  stage.addEventListener('wheel', (e) => {
+    e.preventDefault(); // neither the page nor the browser's own zoom
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? stageSize().h : 1;
+    if (e.ctrlKey || e.metaKey) {
+      if (gesture) return;
+      // a pinch on a trackpad comes as ctrl+wheel; a mouse notch is ~100
+      const d = Math.max(-50, Math.min(50, e.deltaY * unit));
+      const { sx, sy } = stagePoint(e);
+      zoomAt(st.zoom * Math.exp(-d * 0.01), sx, sy);
+    } else {
+      panBy(-e.deltaX * unit, -e.deltaY * unit);
+    }
+  }, { passive: false });
+  stage.addEventListener('gesturestart', (e) => {
+    e.preventDefault();
+    gesture = { zoom: st.zoom };
+  });
+  stage.addEventListener('gesturechange', (e) => {
+    e.preventDefault();
+    const { sx, sy } = stagePoint(e);
+    zoomAt(gesture.zoom * e.scale, sx, sy);
+  });
+  stage.addEventListener('gestureend', () => {
+    gesture = null;
+  });
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.button === 1) e.preventDefault(); // no autoscroll on the middle button
+  });
+  // the work area changes with the window (and the panes): keep the
+  // canvases its size, and a fitted sheet fitted
+  new ResizeObserver(() => {
+    if (!st.spec) return;
+    resizeCanvases();
+    if (st.fit) fitView();
+    else requestPaint();
+  }).observe(stage);
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') setSpace(false);
+  });
+  window.addEventListener('blur', () => setSpace(false));
+}
+
+function setSpace(on) {
+  st.space = on;
+  overlay.classList.toggle('grab', on);
+}
+
+// space+drag or the middle button: drag the view. True when it started.
+function startPan(e) {
+  if (e.button !== 1 && !st.space) return false;
+  e.preventDefault();
+  overlay.setPointerCapture(e.pointerId);
+  st.pan = { x: e.clientX, y: e.clientY, ox: st.ox, oy: st.oy };
+  overlay.classList.add('grabbing');
+  return true;
+}
+
 // ---------------------------------------------------------------- layers
 
 function renderLayers() {
   const list = $('#layer-list');
   list.textContent = '';
-  const el = selEl();
-  const linked = new Set(el ? linkedTo(el) : []);
+  const linked = new Set(selEls().flatMap(linkedTo));
   // topmost first
   for (let i = st.spec.elements.length - 1; i >= 0; i--) {
     const e = st.spec.elements[i];
     const li = document.createElement('li');
-    li.className = (i === st.sel ? 'sel ' : '') + (e.hidden ? 'hidden ' : '') + (linked.has(e) ? 'linked' : '');
+    li.className = (i === st.sel ? 'sel ' : st.multi.includes(i) ? 'multi ' : '') + (e.hidden ? 'hidden ' : '') + (linked.has(e) ? 'linked' : '');
     const eye = document.createElement('span');
     eye.className = 'eye';
     eye.textContent = e.hidden ? '○' : '●';
@@ -214,14 +399,28 @@ function renderLayers() {
     type.className = 'type';
     type.textContent = e.type;
     li.append(eye, name, type);
-    li.addEventListener('click', () => select(i));
+    li.addEventListener('click', (ev) => select(i, { toggle: ev.shiftKey }));
     list.append(li);
   }
 }
 
-function select(i) {
-  if (i !== st.sel) st.caret = null;
-  st.sel = i;
+// select one element (-1: none), or with toggle add it to / take it out of
+// the selection
+function select(i, { toggle = false } = {}) {
+  const before = st.sel;
+  if (toggle && i >= 0) {
+    const at = st.multi.indexOf(i);
+    if (at < 0) {
+      st.multi.push(i);
+      st.sel = i;
+    } else {
+      st.multi.splice(at, 1);
+      if (st.sel === i) st.sel = st.multi.length ? st.multi.at(-1) : -1;
+    }
+  } else {
+    setSel(i);
+  }
+  if (st.sel !== before || st.multi.length > 1) st.caret = null;
   renderLayers();
   renderPanel();
   requestPaint();
@@ -239,8 +438,15 @@ function renderPanel() {
   const form = $('#fields');
   form.textContent = '';
   const el = selEl();
-  $('#props-title').textContent = el ? `${nameOf(el)} — ${TYPES[el.type]?.label || el.type}` : '（要素を選んでください）';
+  const n = selection().length;
+  $('#props-title').textContent = el ? `${nameOf(el)}${n > 1 ? ` ほか ${n - 1} 個` : ''} — ${TYPES[el.type]?.label || el.type}` : '（要素を選んでください）';
   if (!el) return;
+  if (n > 1) {
+    const note = document.createElement('p');
+    note.className = 'hint';
+    note.textContent = `${n} 個を選んでいます。下の項目は「${nameOf(el)}」だけに効きます。整列は左の欄のボタンで、移動はまとめてできます。`;
+    form.append(note);
+  }
   const T = TYPES[el.type];
   const common = [
     { key: 'id', label: '名前', type: 'text' },
@@ -278,6 +484,16 @@ function fieldRow(el, f) {
       input.value = v ?? f.def ?? '';
       input.addEventListener('input', () => {
         if (input.value === '' || !Number.isFinite(+input.value)) return;
+        if (f.key === 'rotation' && linkedTo(el).length) {
+          // what follows it turns with it, about its centre
+          willChange(key);
+          const [cx, cy] = rotationCentre(el, g, ctx());
+          for (const o of linkedTo(el)) rotateElement(o, +input.value - (el.rotation || 0), cx, cy, g, ctx());
+          el.rotation = +input.value;
+          if (el.type === 'piece') el.pin = true;
+          changed();
+          return;
+        }
         commit(+input.value);
       });
       break;
@@ -483,7 +699,8 @@ function renderPalette() {
 // ---------------------------------------------------------------- canvas input
 
 function toDesign(e) {
-  return { x: e.offsetX / st.zoom, y: e.offsetY / st.zoom };
+  const { sx, sy } = stagePoint(e);
+  return { x: (sx - st.ox) / st.zoom, y: (sy - st.oy) / st.zoom };
 }
 
 // smallest box under the point (big scatter fields would win otherwise)
@@ -505,6 +722,7 @@ function hitTest(p) {
 }
 
 overlay.addEventListener('pointerdown', (e) => {
+  if (startPan(e)) return;
   const p = toDesign(e);
   if (st.scope.on) {
     st.scope.pinned = !st.scope.pinned;
@@ -513,20 +731,39 @@ overlay.addEventListener('pointerdown', (e) => {
     return;
   }
   const i = hitTest(p);
-  if (caretAt() && i === st.sel) {
+  if (caretAt() && i === st.sel && !e.shiftKey) {
     placeCaret(selEl(), p); // kerning: a click moves the caret, it does not drag
     return;
   }
-  select(i);
-  if (i < 0) return;
+  // ⇧: add to / take out of the selection; a click on one of several
+  // selected keeps them all (to drag them together; a click alone, without
+  // dragging, then selects just that one)
+  let only = -1;
+  if (e.shiftKey) select(i, { toggle: true });
+  else if (i >= 0 && st.multi.length > 1 && st.multi.includes(i)) only = i;
+  else select(i);
+  if (i < 0 || !st.multi.includes(i)) return;
+  if (only >= 0 && st.sel !== i) {
+    st.sel = i;
+    renderLayers();
+    renderPanel();
+  }
   overlay.setPointerCapture(e.pointerId);
   willChange(`drag:${performance.now()}`);
-  st.drag = { start: p, moved: { x: 0, y: 0 }, alone: e.altKey };
+  const moving = movingSet(e.altKey);
+  st.drag = { start: p, moved: { x: 0, y: 0 }, alone: e.altKey, only, box: unionBounds(selEls()), targets: snapTargets(moving), guides: null };
 });
 
 overlay.addEventListener('pointermove', (e) => {
   const p = toDesign(e);
   $('#coords').textContent = `x ${Math.round(p.x)}  y ${Math.round(p.y)}  (u ${(p.x / (st.spec.unit || 12)).toFixed(1)}, ${(p.y / (st.spec.unit || 12)).toFixed(1)})`;
+  if (st.pan) {
+    st.ox = st.pan.ox + e.clientX - st.pan.x;
+    st.oy = st.pan.oy + e.clientY - st.pan.y;
+    st.fit = false;
+    viewChanged();
+    return;
+  }
   if (st.scope.on) {
     if (!st.scope.pinned) {
       Object.assign(st.scope, p, { stale: true });
@@ -545,19 +782,34 @@ overlay.addEventListener('pointermove', (e) => {
   const u = st.spec.unit || 12;
   let dx = p.x - st.drag.start.x;
   let dy = p.y - st.drag.start.y;
-  const snap = e.shiftKey ? u : 1;
-  dx = Math.round(dx / snap) * snap;
-  dy = Math.round(dy / snap) * snap;
+  const step = e.shiftKey ? u : 1;
+  dx = Math.round(dx / step) * step;
+  dy = Math.round(dy / step) * step;
+  // ⇧ is the u grid; otherwise edges and middles snap (⌘ held: not now)
+  const snapped = !e.shiftKey && !(e.metaKey || e.ctrlKey) && $('#snap').checked ? smartSnap(st.drag, dx, dy) : null;
+  if (snapped) ({ dx, dy } = snapped);
+  st.drag.guides = snapped?.guides || null;
   const ddx = dx - st.drag.moved.x;
   const ddy = dy - st.drag.moved.y;
-  if (!ddx && !ddy) return;
+  if (!ddx && !ddy) {
+    requestPaint(); // the guides may have changed
+    return;
+  }
   moveSelected(ddx, ddy, st.drag.alone);
   st.drag.moved = { x: dx, y: dy };
 });
 
 overlay.addEventListener('pointerup', () => {
-  if (st.drag && (st.drag.moved.x || st.drag.moved.y)) renderPanel();
+  if (st.pan) {
+    st.pan = null;
+    overlay.classList.remove('grabbing');
+    return;
+  }
+  const d = st.drag;
   st.drag = null;
+  if (d && (d.moved.x || d.moved.y)) renderPanel();
+  else if (d && d.only >= 0) select(d.only);
+  requestPaint();
 });
 overlay.addEventListener('pointerleave', () => {
   st.hover = -1;
@@ -568,16 +820,125 @@ overlay.addEventListener('dblclick', (e) => {
   if (!st.scope.on && el?.type === 'text') placeCaret(el, toDesign(e));
 });
 
+// what moves with the selection: the selected elements and, unless alone,
+// what follows them (each once)
+function movingSet(alone = false) {
+  const sel = selEls();
+  const set = new Set(sel);
+  if (!alone) for (const el of sel) for (const o of linkedTo(el)) set.add(o);
+  return [...set];
+}
+
 function moveSelected(dx, dy, alone = false) {
-  const el = selEl();
-  if (!el) return;
-  moveElement(el, dx, dy);
-  if (el.type === 'piece') el.pin = true; // placed by hand: keep it when scattering again
-  if (!alone) for (const o of linkedTo(el)) moveElement(o, dx, dy);
+  const sel = selEls();
+  if (!sel.length) return;
+  for (const el of movingSet(alone)) moveElement(el, dx, dy);
+  for (const el of sel) if (el.type === 'piece') el.pin = true; // placed by hand: keep it when scattering again
   st.dirty = true;
   st.scope.stale = true;
   showStatus();
   requestPaint();
+}
+
+// ---------------------------------------------------------------- snapping and aligning
+
+const r2 = (v) => Math.round(v * 100) / 100 || 0; // (never −0)
+
+function unionBounds(els) {
+  const c = ctx();
+  const bs = els.map((el) => boundsOf(el, g, c)).filter(Boolean);
+  if (!bs.length) return null;
+  return {
+    x0: Math.min(...bs.map((b) => b.x0)), y0: Math.min(...bs.map((b) => b.y0)),
+    x1: Math.max(...bs.map((b) => b.x1)), y1: Math.max(...bs.map((b) => b.y1)),
+  };
+}
+
+// What a drag can snap to: the edges and middles of every other visible
+// element and of the sheet. x targets carry the y extent of what they come
+// from (for drawing the guide), y targets the x extent.
+const NO_SNAP = new Set(['frame', 'debris', 'scatter']); // areas, not things
+function snapTargets(moving) {
+  const c = ctx();
+  const skip = new Set(moving);
+  const xs = [];
+  const ys = [];
+  const add = (b, sheet = false) => {
+    for (const v of [b.x0, (b.x0 + b.x1) / 2, b.x1]) xs.push({ v, lo: b.y0, hi: b.y1, sheet });
+    for (const v of [b.y0, (b.y0 + b.y1) / 2, b.y1]) ys.push({ v, lo: b.x0, hi: b.x1, sheet });
+  };
+  add({ x0: 0, y0: 0, x1: W(), y1: H() }, true);
+  for (const el of st.spec.elements) {
+    if (el.hidden || skip.has(el) || NO_SNAP.has(el.type)) continue;
+    const b = boundsOf(el, g, c);
+    if (b) add(b);
+  }
+  return { xs, ys };
+}
+
+// The drag (dx, dy) moved so that an edge or the middle of the selection
+// meets the nearest target within 6 screen px, on each axis; and the guides
+// of everything it then lines up with.
+function smartSnap(drag, dx, dy) {
+  const b = drag.box;
+  if (!b) return null;
+  const reach = 6 / st.zoom;
+  const axis = (lo, hi, d, targets) => {
+    const ms = [lo + d, (lo + hi) / 2 + d, hi + d];
+    let best = null;
+    for (const t of targets) for (const m of ms) if (Math.abs(t.v - m) <= reach && (best == null || Math.abs(t.v - m) < Math.abs(best))) best = t.v - m;
+    return best == null ? d : r2(d + best);
+  };
+  dx = axis(b.x0, b.x1, dx, drag.targets.xs);
+  dy = axis(b.y0, b.y1, dy, drag.targets.ys);
+  const nb = { x0: b.x0 + dx, y0: b.y0 + dy, x1: b.x1 + dx, y1: b.y1 + dy };
+  const on = (v, ms) => ms.some((m) => Math.abs(v - m) < 0.01);
+  const mx = [nb.x0, (nb.x0 + nb.x1) / 2, nb.x1];
+  const my = [nb.y0, (nb.y0 + nb.y1) / 2, nb.y1];
+  const guides = [
+    ...drag.targets.xs.filter((t) => on(t.v, mx)).map((t) => ({ x: t.v, lo: Math.min(t.lo, nb.y0), hi: Math.max(t.hi, nb.y1) })),
+    ...drag.targets.ys.filter((t) => on(t.v, my)).map((t) => ({ y: t.v, lo: Math.min(t.lo, nb.x0), hi: Math.max(t.hi, nb.x1) })),
+  ];
+  return { dx, dy, guides };
+}
+
+function paintGuides(guides, px) {
+  og.strokeStyle = '#E6007E';
+  og.lineWidth = px;
+  og.beginPath();
+  for (const gd of guides) {
+    if (gd.x != null) {
+      og.moveTo(gd.x, gd.lo);
+      og.lineTo(gd.x, gd.hi);
+    } else {
+      og.moveTo(gd.lo, gd.y);
+      og.lineTo(gd.hi, gd.y);
+    }
+  }
+  og.stroke();
+}
+
+// Line the selection up: several selected, with each other (the box around
+// them); one, with the sheet. What follows an element moves with it.
+function align(edge) {
+  const sel = selEls();
+  if (!sel.length) return;
+  const c = ctx();
+  const boxes = sel.map((el) => boundsOf(el, g, c));
+  const t = sel.length > 1 ? unionBounds(sel) : { x0: 0, y0: 0, x1: W(), y1: H() };
+  const mid = (a, b) => (a + b) / 2;
+  willChange();
+  sel.forEach((el, k) => {
+    const b = boxes[k];
+    if (!b) return;
+    const dx = r2({ left: t.x0 - b.x0, centre: mid(t.x0, t.x1) - mid(b.x0, b.x1), right: t.x1 - b.x1 }[edge] ?? 0);
+    const dy = r2({ top: t.y0 - b.y0, middle: mid(t.y0, t.y1) - mid(b.y0, b.y1), bottom: t.y1 - b.y1 }[edge] ?? 0);
+    if (!dx && !dy) return;
+    moveElement(el, dx, dy);
+    if (el.type === 'piece') el.pin = true;
+    for (const o of linkedTo(el)) if (!sel.includes(o)) moveElement(o, dx, dy);
+  });
+  changed({ panel: true });
 }
 
 // ---------------------------------------------------------------- keys
@@ -591,6 +952,32 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (typing) return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (!st.space) setSpace(true);
+    return;
+  }
+  // zoom (⌘+ is shift+; on a JIS keyboard, ⌘^ next to −)
+  if (mod && (['+', '=', ';', '^'].includes(e.key) || ['Equal', 'Semicolon', 'NumpadAdd'].includes(e.code))) {
+    e.preventDefault();
+    zoomStep(1);
+    return;
+  }
+  if (mod && (e.key === '-' || ['Minus', 'NumpadSubtract'].includes(e.code))) {
+    e.preventDefault();
+    zoomStep(-1);
+    return;
+  }
+  if (mod && (e.key === '0' || e.code === 'Digit0' || e.code === 'Numpad0')) {
+    e.preventDefault();
+    fitView();
+    return;
+  }
+  if (mod && (e.key === '1' || e.code === 'Digit1' || e.code === 'Numpad1')) {
+    e.preventDefault();
+    zoomCentre(1);
+    return;
+  }
   if (mod && e.key.toLowerCase() === 'z') {
     e.preventDefault();
     if (e.shiftKey) restore(st.redo, st.undo);
@@ -624,24 +1011,35 @@ window.addEventListener('keydown', (e) => {
 
 // ---------------------------------------------------------------- structure
 
+// every selected element, each copy right above its original; the copies
+// become the selection
 function duplicate() {
-  const el = selEl();
-  if (!el) return;
+  const sel = selEls();
+  if (!sel.length) return;
   willChange();
-  const copy = structuredClone(el);
-  if (copy.id) copy.id = uniqueId(copy.id);
-  moveElement(copy, 24, 24);
-  st.spec.elements.splice(st.sel + 1, 0, copy);
-  st.sel += 1;
+  const els = st.spec.elements;
+  const primary = selEl();
+  let main = null;
+  const copies = sel.map((el) => {
+    const copy = structuredClone(el);
+    if (copy.id) copy.id = uniqueId(copy.id);
+    moveElement(copy, 24, 24);
+    els.splice(els.indexOf(el) + 1, 0, copy);
+    if (el === primary) main = copy;
+    return copy;
+  });
+  st.multi = copies.map((c) => els.indexOf(c));
+  st.sel = els.indexOf(main);
   changed({ structure: true });
 }
 
 function remove() {
-  const el = selEl();
-  if (!el) return;
+  const idx = selection();
+  if (!idx.length) return;
   willChange();
-  st.spec.elements.splice(st.sel, 1);
-  st.sel = Math.min(st.sel, st.spec.elements.length - 1);
+  const drop = new Set(idx.map((i) => st.spec.elements[i]));
+  st.spec.elements = st.spec.elements.filter((el) => !drop.has(el));
+  setSel(Math.min(Math.min(...idx), st.spec.elements.length - 1));
   changed({ structure: true });
 }
 
@@ -652,19 +1050,20 @@ function reorder(delta) {
   willChange();
   const els = st.spec.elements;
   [els[i], els[j]] = [els[j], els[i]];
-  st.sel = j;
+  setSel(j);
   changed({ structure: true });
 }
 
 function add(type) {
-  const stage = $('#stage');
-  const cx = (stage.scrollLeft + stage.clientWidth / 2 - 16) / st.zoom;
-  const cy = (stage.scrollTop + stage.clientHeight / 2 - 16) / st.zoom;
+  // the middle of what is on screen
+  const { w, h } = stageSize();
+  const cx = Math.max(0, (w / 2 - st.ox) / st.zoom);
+  const cy = Math.max(0, (h / 2 - st.oy) / st.zoom);
   willChange();
   const el = createElement(type, Math.round(Math.min(cx, W() / 2 + 400)), Math.round(Math.min(cy, H() - 200)));
   el.id = uniqueId(type);
   st.spec.elements.push(el);
-  st.sel = st.spec.elements.length - 1;
+  setSel(st.spec.elements.length - 1);
   changed({ structure: true });
 }
 
@@ -869,7 +1268,7 @@ function splitDebris(el) {
   const round = (v) => Math.round(v * 10) / 10;
   insertPieces(el, debrisPieces(el).map((p) => ({ ...p, x: Math.round(p.x), y: Math.round(p.y), r: round(p.r), rotation: round(p.rotation) })));
   el.split = true;
-  st.sel = st.spec.elements.indexOf(el);
+  setSel(st.spec.elements.indexOf(el));
   changed({ structure: true });
   showStatus(`がらくたを ${el.count} 個の要素にばらしました`);
 }
@@ -887,7 +1286,7 @@ function scatterDebris(el, keepPinned) {
   const res = scatterPieces(field, area, { count: el.count, rMin: el.rMin, rMax: el.rMax, gap: el.gap, colors: el.colors, seed: el.seed }, keep);
   insertPieces(el, res.pieces);
   el.split = true;
-  st.sel = st.spec.elements.indexOf(el);
+  setSel(st.spec.elements.indexOf(el));
   changed({ structure: true });
   const short = res.placed < res.wanted ? `（隙間が足りず ${res.wanted - res.placed} 個は置けませんでした）` : '';
   showStatus(`がらくたを ${res.placed} 個撒きました${keep.length ? `、固定 ${keep.length} 個はそのまま` : ''}${short}`);
@@ -1040,6 +1439,7 @@ function wire() {
     st.scope.stale = true;
     requestPaint();
   });
+  for (const b of document.querySelectorAll('[data-align]')) b.addEventListener('click', () => align(b.dataset.align));
   $('#up').addEventListener('click', () => reorder(1));
   $('#down').addEventListener('click', () => reorder(-1));
   $('#dup').addEventListener('click', duplicate);
@@ -1068,9 +1468,9 @@ function wire() {
       if (!Array.isArray(spec.elements) || !spec.size) throw new Error('not a poster');
       willChange();
       st.spec = spec;
-      st.sel = -1;
+      setSel(-1);
       renderPalette();
-      setZoom($('#zoom').value);
+      fitView(); // the sheet may have another size
       changed({ structure: true });
     } catch (err) {
       showStatus(`読み込めません: ${err.message}`);
@@ -1080,9 +1480,7 @@ function wire() {
   window.addEventListener('beforeunload', (e) => {
     if (st.dirty) e.preventDefault();
   });
-  window.addEventListener('resize', () => {
-    if ($('#zoom').value === 'fit') setZoom('fit');
-  });
+  wireView();
 }
 
 async function main() {
@@ -1100,7 +1498,8 @@ async function main() {
   renderPalette();
   renderLayers();
   renderPanel();
-  setZoom('fit');
+  resizeCanvases();
+  fitView();
   showStatus();
   window.posterEditor = st; // for poking at from the console
 }
