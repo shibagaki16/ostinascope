@@ -1,7 +1,8 @@
-# Publish the app on GitHub Pages: test, then deploy only what the app
-# needs, stamped with the commit it was built from (src/app/build.js and
-# version.json — the app shows it, and offers to update when a newer one
-# is out). Runs on every push to main, or by hand (Actions → Pages → Run).
+# Tests on every push to main (or by hand: Actions → Pages → Run), and the
+# old address on GitHub Pages (https://shibagaki16.github.io/ostinascope/):
+# a page that sends visitors on to https://ostinascope.shibagaki16.jp/.
+# The app itself is built and published by Cloudflare (wrangler.jsonc,
+# docs/publish.md).
 name: Pages
 
 on:
@@ -37,17 +38,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
-      - name: Assemble the site (the app only)
-        env:
-          SHA: ${{ github.sha }}
+      - name: The page that sends visitors to the new address
         run: |
           mkdir -p _site
-          cp -r index.html sw.js src poster _site/
-          commit="${SHA::7}"
-          time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          printf "// written by .github/workflows/pages.yml\nexport const BUILD = { commit: '%s', time: '%s' };\n" "$commit" "$time" > _site/src/app/build.js
-          printf '{"commit":"%s","time":"%s"}\n' "$commit" "$time" > _site/version.json
-          find _site -type f | sort
+          cp .github/pages-moved/index.html .github/pages-moved/sw.js _site/
+          cp .github/pages-moved/index.html _site/404.html
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:

@@ -355,9 +355,9 @@ test('colour is picked from the ink', () => {
   assert.ok(r.hue < 15 || r.hue > 345, `hue ${r.hue}`);
 });
 
-// the time depends on the machine: GitHub's are slower than a desktop, so
-// there (CI) it is not a test
-test('analysis is fast enough for ~10 Hz', { skip: process.env.CI ? 'timing depends on the machine' : false }, () => {
+// the time depends on the machine: GitHub's and Cloudflare's build machines are
+// slower than a desktop, so there (CI) it is not a test
+test('analysis is fast enough for ~10 Hz', { skip: process.env.CI || process.env.WORKERS_CI ? 'timing depends on the machine' : false }, () => {
   // as in the app's worker: the row search alternates over two frames
   const det = createDetector({ rowSplit: 2 });
   const rgba = S.render(W, H, S.grid(9, 12), { ss: 1 });

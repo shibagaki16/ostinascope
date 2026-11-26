@@ -1,6 +1,6 @@
 # 公開と更新
 
-安定した実機テストと展示は **GitHub Pages**（https://shibagaki16.github.io/ostinascope/）で行う。
+安定した実機テストと展示は **Cloudflare**（https://ostinascope.shibagaki16.jp/）で行う。静的なファイルだけを配る Cloudflare Workers で、独自ドメインは Cloudflare のダッシュボードで Worker に付けている。
 
 ## 公開するもの
 
@@ -10,14 +10,27 @@
 
 ## 公開のしかた
 
-`main` にプッシュすると、`.github/workflows/pages.yml` が自動で公開する。
+`main` にプッシュすると、Cloudflare がリポジトリを取ってきて、`wrangler.jsonc` のとおりに公開する。
 
-1. テスト（`npm test`）。落ちたら公開しない。処理速度のテストだけは、GitHub のマシンでは測らない。
-2. アプリに要るもの（上の 4 つ）を集め、コミットと時刻を `src/app/build.js` と `version.json` に書き込んで公開する。
+1. テスト（`npm test`）。落ちたら公開しない。処理速度のテストだけは、Cloudflare のマシンでは測らない。
+2. `scripts/build-site.sh` が、アプリに要るもの（上の 4 つ）を `_site/` に集め、コミットと時刻を `src/app/build.js` と `version.json` に書き込む。公開されるのは `_site/` だけ。
+
+手元で `sh scripts/build-site.sh` を実行すると、同じ `_site/` ができる（git 管理外）。ビルドの結果は Cloudflare のダッシュボード（Workers & Pages → ostinascope → Deployments）で見られる。
+
+## 版の表示と、新しい版の知らせ
+
+- 開始画面と設定パネルに、**版（コミットと公開の時刻）** が出る。公開時に `src/app/build.js` に書き込まれたもの。
+- 開いたときに `version.json`（いま公開されている版）を読み、動いている版より新しければ「新しい版があります — 更新」に変わる。
+- 手元の開発サーバでは版が書き込まれていないので、ファイルの更新時刻を「（開発版）」として出す。
+
+## GitHub の側
+
+- `.github/workflows/pages.yml` は、プッシュのたびにテストを回し、前の公開先に下の案内のページを置く。ここでテストが落ちても Cloudflare への公開は止まらない（止めるのは Cloudflare 側のテスト）。
+- 前の公開先（GitHub Pages、https://shibagaki16.github.io/ostinascope/）には、新しい URL へ移る案内のページ（`.github/pages-moved/`）だけを置いている。前の URL や QR コードから来た人も、`?mode=demo` などを付けたまま新しい URL に移る。前の URL で一度開いたスマホに残った Service Worker は、このときに消える。
 
 ## 更新したのに古い版が動く問題
 
-GitHub Pages はファイルを 10 分間キャッシュさせる。そのためスマホでは、新旧のファイルが混ざったり、再読み込みしても古いままだったりする（スーパーロードもできない）。`sw.js`（Service Worker）がこれを防ぐ。
+ブラウザは、ファイルをサーバに確かめずに使い回すことがある（前の公開先の GitHub Pages は 10 分間それを許していた。スマホのキャッシュがそうすることもある）。そのためスマホでは、新旧のファイルが混ざったり、再読み込みしても古いままだったりする（スーパーロードもできない）。`sw.js`（Service Worker）がこれを防ぐ。
 
 - このサイトのファイルは、毎回サーバに確かめてから使う。変わっていなければ「変更なし」の短い返事だけなので速い。ブラウザ側のキャッシュが古いファイルを使い回さないようにもしている。
 - 最後に取れたものを取っておき、ネットにつながらないときはそれで開く（会場の回線が悪くても起動できる）。

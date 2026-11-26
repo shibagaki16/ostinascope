@@ -7,7 +7,7 @@
 Phones only allow the camera over HTTPS. --https creates a self-signed
 certificate in .cert/ (git-ignored) with openssl; on the phone, accept the
 certificate warning once ("Show Details" → "visit this website" on iOS).
-For anything beyond quick tests, publish to GitHub Pages instead.
+For anything beyond quick tests, use the published site (docs/publish.md).
 """
 
 import argparse

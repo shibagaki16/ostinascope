@@ -24,7 +24,7 @@
 - iPhone は「タップして開始」で音が有効になる。消音スイッチ ON でも鳴るよう `navigator.audioSession` を設定済み（iOS 16.4+）。
 - URL に `?debug` を付けると解析セルと統計を表示し、コンソールから `window.ostinascope` で内部状態を触れる。
 - 枠をカメラの動きに合わせて動かす「追従」は既定でオン。設定パネルのチェック、または URL の `?nofollow` で切れる（比べるとき用）。
-- 公開：`main` にプッシュすると、テストのあと GitHub Pages（https://shibagaki16.github.io/ostinascope/）に公開される。詳しくは `docs/publish.md`。
+- 公開：`main` にプッシュすると、テストのあと Cloudflare（https://ostinascope.shibagaki16.jp/）に公開される。詳しくは `docs/publish.md`。
 
 ### デモモード
 
@@ -63,7 +63,7 @@ src/                    アプリ本体（ブラウザでそのまま動く ES M
     render.js           検出の枠・注記・演奏バーの描画
     sources.js          カメラ／デモ画像
     update.js           Service Worker の登録・版の表示・新しい版の知らせ・「最新版に更新」
-    build.js            版（公開時にワークフローが書き込む。手元では null）
+    build.js            版（公開時に scripts/build-site.sh が書き込む。手元では null）
   poster/               デモポスター
     poster.js           紙面の描画（要素の種類・項目・描き方）
     qr.js               QR コード（外部のライブラリなし）
@@ -72,8 +72,10 @@ tools/poster-editor/    ポスター編集ツール（アプリからは独立�
 test/                   テスト（合成画像による検出、追跡・マッピング・ポスターデータ）
 bench/                  評価ツール。写真や結果は bench/data/ に置き、git 管理外
 scripts/serve.py        開発サーバ（--https で LAN 向け自己署名 HTTPS）
+scripts/build-site.sh   公開するものを _site/ に集め、版を書き込む（Cloudflare が公開時に実行）
+wrangler.jsonc          Cloudflare への公開の設定
 docs/                   仕組み・公開・改善の記録・まだ確かめていないこと
-.github/workflows/      テストして GitHub Pages に公開
+.github/workflows/      テストと、前の URL（GitHub Pages）から新しい URL への案内
 ```
 
 公開するのは `index.html`・`sw.js`・`src/`・`poster/` の 4 つだけ。公開先の URL（ポスターの QR コードが指す先）を変えないよう、この 4 つは最上位に置いている。
@@ -85,7 +87,7 @@ docs/                   仕組み・公開・改善の記録・まだ確かめ�
 | 文書                            | 中身                                                                       |
 | ------------------------------- | -------------------------------------------------------------------------- |
 | `docs/how-it-works.md`          | 仕組み（検出・並び・面の傾き・カメラの動き・追跡・音）と、調整できるところ |
-| `docs/publish.md`               | GitHub Pages への公開と、スマホで古い版が動かないための仕組み             |
+| `docs/publish.md`               | Cloudflare への公開と、スマホで古い版が動かないための仕組み               |
 | `docs/history.md`               | 改善の記録：何を変えて、どう測り、どう変わったか                           |
 | `docs/todo.md`                  | まだ確かめていないこと（企画書の「検証すること」に対応）                   |
 | `bench/README.md`               | 評価ツールの使い方（写真の取得、合成画像、検出率・誤反応・追従の測り方）   |

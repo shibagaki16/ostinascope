@@ -1,12 +1,13 @@
 // Ostinascope — service worker: always the newest files, and the last good
 // copy when there is no network.
 //
-// GitHub Pages lets browsers keep files for 10 minutes, and the app is made
-// of many module files: after an update a phone could run a mix of old and
-// new ones, and there is no way to force a reload. Here every request of
-// this site asks the server first (a quick "not modified" when nothing
-// changed) and keeps what it got; only when the network fails is the kept
-// copy used — so the app also opens at a venue with a bad connection.
+// The app is made of many module files, and a browser may keep a file
+// without asking (some hosts allow 10 minutes; a phone's own cache can do
+// it too): after an update a phone could run a mix of old and new ones,
+// with no way to force a reload. Here every request of this site asks the
+// server first (a quick "not modified" when nothing changed) and keeps
+// what it got; only when the network fails is the kept copy used — so the
+// app also opens at a venue with a bad connection.
 //
 // Requests to other sites (the web font) are left alone.
 
@@ -30,8 +31,8 @@ self.addEventListener('fetch', (e) => {
       if (!res.ok || res.type !== 'basic') return res;
       const copy = res.clone();
       e.waitUntil(caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {}));
-      // the page's own caches must not keep it: the server says "good for
-      // 10 minutes", and the browser would then reuse the old file on a
+      // the page's own caches must not keep it: if the server allows
+      // keeping it for a while, the browser would reuse the old file on a
       // reload without asking here
       const headers = new Headers(res.headers);
       headers.set('Cache-Control', 'no-cache');

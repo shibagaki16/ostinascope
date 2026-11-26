@@ -1,0 +1,18 @@
+// The app on Cloudflare Workers (static files only, no Worker code):
+// https://ostinascope.shibagaki16.jp/ (the custom domain is set on the
+// Worker in the Cloudflare dashboard).
+//
+// On every push to main Cloudflare runs `npx wrangler deploy`, which runs
+// the build command first: the tests (a failure stops the deploy), then
+// scripts/build-site.sh, which assembles _site/ — all that is published.
+// See docs/publish.md.
+{
+  "name": "ostinascope",
+  "compatibility_date": "2026-09-01",
+  "build": {
+    "command": "npm test && sh scripts/build-site.sh"
+  },
+  "assets": {
+    "directory": "./_site"
+  }
+}

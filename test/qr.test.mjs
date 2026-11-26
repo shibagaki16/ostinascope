@@ -4,7 +4,7 @@ import { qrCode, rsDivisor, rsRemainder } from '../src/poster/qr.js';
 
 // Checked once against a real decoder (Chrome's BarcodeDetector): these
 // texts at these levels decode to themselves at these versions.
-const URL = 'https://shibagaki16.github.io/ostinascope/';
+const URL = 'https://ostinascope.shibagaki16.jp/';
 
 function gfMul(x, y) {
   let z = 0;

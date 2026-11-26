@@ -56,3 +56,7 @@ bench/data/
 
 # Poster editor: previous version kept on save
 poster/*.bak
+
+# the published site, assembled by scripts/build-site.sh; wrangler's scratch
+_site/
+.wrangler/
