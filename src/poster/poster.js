@@ -926,17 +926,16 @@ export const TYPES = {
     make: () => ({ type: 'checker', x: -28, y: -28, nx: 4, ny: 4, size: 14, color: 'ink' }),
   },
 
-  // a QR code (the app's address): whole-px modules, so the print is crisp,
-  // with the standard's quiet zone of 4 modules in the ground colour
+  // a QR code (the app's address): whole-px modules, so the print is crisp.
+  // No quiet zone of its own: the box is the code itself (for aligning), so
+  // keep the space around it clear on the sheet (4 modules is the standard)
   qr: {
     label: '2 次元コード',
     draw(g, el, ctx) {
       const m = qrOf(el);
-      const q = 4;
       const s = el.module;
-      const n = m.length + 2 * q;
       g.fillStyle = ctx.color(el.bg);
-      g.fillRect(el.x, el.y, n * s, n * s);
+      g.fillRect(el.x, el.y, m.length * s, m.length * s);
       g.fillStyle = ctx.color(el.color);
       for (let y = 0; y < m.length; y++) {
         // a run of dark modules as one rectangle (no seams between them)
@@ -944,13 +943,13 @@ export const TYPES = {
           if (!m[y][x]) continue;
           let e = x;
           while (e + 1 < m.length && m[y][e + 1]) e++;
-          g.fillRect(el.x + (x + q) * s, el.y + (y + q) * s, (e - x + 1) * s, s);
+          g.fillRect(el.x + x * s, el.y + y * s, (e - x + 1) * s, s);
           x = e;
         }
       }
     },
     bounds: (el) => {
-      const n = qrOf(el).length + 8;
+      const n = qrOf(el).length;
       return box(el.x, el.y, el.x + n * el.module, el.y + n * el.module);
     },
     fields: [...XY, F.text('text', '載せる文字（URL）'), F.num('module', '1 マスの大きさ', 1, 1), F.color('color'), F.color('bg', '地の色')],
