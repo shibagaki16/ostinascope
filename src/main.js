@@ -393,11 +393,35 @@ function cameraLost(err) {
   state.paused = null;
   stall = 0;
   reopenFails = 0;
-  showStart(startError('camera', err));
+  showStart(startError('camera', err), refusedHelp(err));
 }
 
-function showStart(message) {
-  $('#start-error').textContent = message;
+// The start screen again, with what went wrong (and, for a refused camera,
+// how to allow it again).
+function showStart(message, help = null) {
+  const box = $('#start-error');
+  box.textContent = '';
+  const line = (text, cls) => {
+    const el = document.createElement('p');
+    if (cls) el.className = cls;
+    el.textContent = text;
+    box.append(el);
+  };
+  line(message);
+  if (help) {
+    if (help.lead) line(help.lead, 'lead-in');
+    if (help.steps) {
+      const ol = document.createElement('ol');
+      ol.className = 'steps';
+      for (const step of help.steps) {
+        const li = document.createElement('li');
+        li.textContent = step;
+        ol.append(li);
+      }
+      box.append(ol);
+    }
+    if (help.after) line(help.after, 'after');
+  }
   $('#panel').hidden = true;
   $('#start').hidden = false;
   document.body.classList.remove('running');
@@ -432,14 +456,101 @@ async function demoSource() {
   return state.demo;
 }
 
+// ---------------------------------------------------------------------------
+// a refused camera: how to allow it again, and opening it once allowed
+//
+// Once "blocked", a browser does not ask again by itself — getUserMedia is
+// refused at once, with no dialog (that is how browsers keep sites from
+// asking over and over). Only its setting brings the camera back; so say
+// where it is, and watch the permission: once it is "allow" (or "ask"
+// again), open the camera without a reload.
+
+let cameraPerm = null; // the browser's camera permission, when it tells (PermissionStatus)
+let awaitingCamera = false; // refused: open the camera once it is allowed
+if (navigator.permissions?.query) {
+  navigator.permissions.query({ name: 'camera' }).then((p) => {
+    cameraPerm = p;
+    p.addEventListener('change', () => cameraAllowed(p.state));
+  }, () => {
+    /* this browser cannot tell: the steps say to reload */
+  });
+}
+
+function cameraAllowed(st) {
+  if (!awaitingCamera || st === 'denied' || $('#start').hidden) return;
+  awaitingCamera = false;
+  start('camera');
+}
+
+// some browsers change the setting in another window without telling the
+// page: look again when it is back
+function recheckCamera() {
+  if (!awaitingCamera || document.hidden || !navigator.permissions?.query) return;
+  navigator.permissions.query({ name: 'camera' }).then((p) => cameraAllowed(p.state), () => {});
+}
+window.addEventListener('focus', recheckCamera);
+document.addEventListener('visibilitychange', recheckCamera);
+
+function browserKind() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return /CriOS/.test(ua) ? 'ios-chrome' : 'ios';
+  if (/Android/.test(ua)) return 'android';
+  if (/Edg\//.test(ua)) return 'edge';
+  if (/Firefox\//.test(ua)) return 'firefox';
+  if (/Chrome\//.test(ua)) return 'chrome';
+  if (/Safari\//.test(ua)) return 'safari';
+  return 'other';
+}
+
+const ALLOW_STEPS = {
+  chrome: ['アドレスバーの左端のアイコン（サイト情報）をクリック', '「カメラ」を「許可」（オン）にする'],
+  edge: ['アドレスバーの左端のアイコン（サイト情報）をクリック', '「このサイトのアクセス許可」で「カメラ」を「許可」にする'],
+  firefox: ['アドレスバーの左の、斜線の入ったカメラのアイコンをクリック', '「ブロック」の横の × を押して外す'],
+  safari: ['メニューの「Safari」→「設定…」→「Web サイト」を開く', '左の「カメラ」を選び、このサイトを「許可」にする'],
+  ios: ['アドレスバーの左端のアイコン（「ぁあ」）→「Web サイトの設定」を開く', '「カメラ」を「許可」か「確認」にする', 'それでも出ないときは「設定」アプリの「Safari」→「カメラ」を確かめる'],
+  'ios-chrome': ['「設定」アプリの「Chrome」を開く', '「カメラ」をオンにする'],
+  android: ['アドレスバーの左端のアイコンをタップ →「権限」（または「サイトの設定」）', '「カメラ」を「許可」にする'],
+  other: ['ブラウザの設定で、このサイトのカメラを「許可」にする'],
+};
+
+// How to get a refused camera back: null when that is not what happened.
+function refusedHelp(err) {
+  if (err?.name !== 'NotAllowedError') return null;
+  const ua = navigator.userAgent;
+  // the system keeps the browser from the camera (Chrome says "by system")
+  if (/system/i.test(err.message || '') && /Mac|Windows/.test(ua)) {
+    awaitingCamera = false;
+    return /Mac/.test(ua)
+      ? { lead: 'Mac の設定で、このブラウザのカメラが止められています。',
+        steps: ['「システム設定」→「プライバシーとセキュリティ」→「カメラ」を開く', 'このブラウザをオンにする（ブラウザを開き直すよう求められます）'],
+        after: 'ブラウザを開き直したら、もう一度「タップして開始」を押してください。' }
+      : { lead: 'Windows の設定で、カメラが止められています。',
+        steps: ['「設定」→「プライバシーとセキュリティ」→「カメラ」を開く', '「カメラへのアクセス」と「デスクトップ アプリがカメラにアクセスできるようにする」をオンにする'],
+        after: 'オンにしたら、もう一度「タップして開始」を押してください。' };
+  }
+  // only closed (×), not blocked: the next tap asks again
+  if (cameraPerm && cameraPerm.state === 'prompt') {
+    return { after: 'もう一度「タップして開始」を押すと、また聞かれます。' };
+  }
+  awaitingCamera = true;
+  return {
+    lead: 'ブラウザは、一度拒否するとダイアログを出し直しません。許可し直すには：',
+    steps: ALLOW_STEPS[browserKind()],
+    after: cameraPerm
+      ? '許可に変えると、自動でカメラが開きます。デモで試すこともできます。'
+      : '許可に変えたら、ページを再読み込みしてください。デモで試すこともできます。',
+  };
+}
+
 // What went wrong when starting, in words.
 function startError(mode, err) {
   const why = (err && err.message) || String(err || '');
   if (mode === 'demo') return `デモポスターを読み込めませんでした（${why}）。通信を確かめて、もう一度試してください。`;
   switch (err && err.name) {
     case 'NotAllowedError':
+      return 'カメラの使用が許可されませんでした。';
     case 'SecurityError':
-      return 'カメラの使用が許可されませんでした。ブラウザの設定で許可するか、デモで試してください。';
+      return 'このページではカメラを使えません（HTTPS で開いてください）。デモで試すこともできます。';
     case 'NotFoundError':
     case 'OverconstrainedError':
       return 'カメラが見つかりませんでした。デモで試してください。';
@@ -486,9 +597,10 @@ async function begin(mode) {
     }
   } catch (err) {
     console.error(err);
-    showStart(startError(mode, err));
+    showStart(startError(mode, err), mode === 'camera' ? refusedHelp(err) : null);
     return;
   }
+  awaitingCamera = false;
   state.mode = mode;
   document.body.dataset.mode = mode;
   clearTracks();
