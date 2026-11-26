@@ -1,6 +1,6 @@
 # 公開と更新
 
-安定した実機テストと展示は **GitHub Pages**（https://trow16.github.io/ostinascope/）で行う。
+安定した実機テストと展示は **GitHub Pages**（https://shibagaki16.github.io/ostinascope/）で行う。
 
 ## 公開するもの
 

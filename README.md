@@ -24,7 +24,7 @@
 - iPhone は「タップして開始」で音が有効になる。消音スイッチ ON でも鳴るよう `navigator.audioSession` を設定済み（iOS 16.4+）。
 - URL に `?debug` を付けると解析セルと統計を表示し、コンソールから `window.ostinascope` で内部状態を触れる。
 - 枠をカメラの動きに合わせて動かす「追従」は既定でオン。設定パネルのチェック、または URL の `?nofollow` で切れる（比べるとき用）。
-- 公開：`main` にプッシュすると、テストのあと GitHub Pages（https://trow16.github.io/ostinascope/）に公開される。詳しくは `docs/publish.md`。
+- 公開：`main` にプッシュすると、テストのあと GitHub Pages（https://shibagaki16.github.io/ostinascope/）に公開される。詳しくは `docs/publish.md`。
 
 ### デモモード
 

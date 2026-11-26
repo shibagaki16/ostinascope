@@ -765,7 +765,7 @@ export const TYPES = {
       return box(el.x, el.y, el.x + n * el.module, el.y + n * el.module);
     },
     fields: [...XY, F.text('text', '載せる文字（URL）'), F.num('module', '1 マスの大きさ', 1, 1), F.color('color'), F.color('bg', '地の色')],
-    make: () => ({ type: 'qr', x: 0, y: 0, text: 'https://trow16.github.io/ostinascope/', module: 6, color: 'ink', bg: 'paper' }),
+    make: () => ({ type: 'qr', x: 0, y: 0, text: 'https://shibagaki16.github.io/ostinascope/', module: 6, color: 'ink', bg: 'paper' }),
   },
 };
 

@@ -95,7 +95,7 @@
     {"type":"checker","x":144,"y":1720,"nx":4,"ny":4,"size":14,"color":"ink","id":"checker-2"},
     {"type":"row","x":576,"y":2424,"gaps":[9,12],"motif":"bottle","size":1,"w":40,"h":150,"color":"ink","accent":"red","detail":"paper","id":"bottles"},
     {"id":"bottles-caption","type":"caption","for":"bottles","text":"×3 ／ 9 : 12u","x":876,"y":2424,"lx":576,"ly":2424,"leader":false},
-    {"id":"qr","type":"qr","x":98,"y":88,"text":"https://trow16.github.io/ostinascope/","module":8,"color":"ink","bg":"paper"},
-    {"type":"text","x":406,"y":271,"size":28,"weight":400,"leading":42,"color":"ink","lines":["\"Ostinascope\"","https://trow16.github.io/ostinascope/"],"id":"text-2"}
+    {"id":"qr","type":"qr","x":98,"y":88,"text":"https://shibagaki16.github.io/ostinascope/","module":8,"color":"ink","bg":"paper"},
+    {"type":"text","x":406,"y":271,"size":28,"weight":400,"leading":42,"color":"ink","lines":["\"Ostinascope\"","https://shibagaki16.github.io/ostinascope/"],"id":"text-2"}
   ]
 }
