@@ -539,6 +539,11 @@ export function createRenderer(canvas) {
     ctx.fillStyle = 'rgba(244,241,234,0.22)';
     ctx.fillRect(0, y0, W, 1);
     ctx.font = `500 9.5px ${FONT}`;
+    if (st.paused) {
+      ctx.fillStyle = '#FFD21F';
+      ctx.fillText(st.paused, 12, y0 + 18);
+      return;
+    }
     if (st.audio.ctx && !st.audio.running) {
       ctx.fillStyle = '#FFD21F';
       ctx.fillText('♪ 音が止まっています — 画面をタップで再開', 12, y0 + 18);
@@ -610,13 +615,19 @@ export function createRenderer(canvas) {
 
   function draw(st) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    st.source.draw(ctx, W, H);
+    // the camera stopped: not its last (frozen) picture, which would look live
+    if (st.paused) {
+      ctx.fillStyle = '#0b0b0d';
+      ctx.fillRect(0, 0, W, H);
+    } else {
+      st.source.draw(ctx, W, H);
+    }
     ctx.fillStyle = 'rgba(6,6,10,0.2)';
     ctx.fillRect(0, 0, W, H);
 
     const S = Math.min(W, H); // view units → CSS px
     const k = W / st.procW; // analysis px → CSS px
-    const voiceRows = st.audio.ctx && !st.audio.running ? 1 : Math.max(1, st.audio.voices.size);
+    const voiceRows = st.paused || (st.audio.ctx && !st.audio.running) ? 1 : Math.max(1, st.audio.voices.size);
     const bounds = {
       top: st.insets.top + (st.debug ? 56 : 46),
       bottom: H - st.insets.bottom - 14 - voiceRows * 17,

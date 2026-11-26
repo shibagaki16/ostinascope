@@ -19,6 +19,13 @@ self.onmessage = (e) => {
   }
   if (m.type !== 'frame') return;
   const rgba = new Uint8ClampedArray(m.buffer);
-  const res = detector.analyze(rgba, m.W, m.H);
-  self.postMessage({ type: 'result', id: m.id, result: slimResult(res, m.cells), buffer: m.buffer }, [m.buffer]);
+  // a frame the detector cannot take must not end the worker: answer
+  // "nothing" and go on with the next one
+  let result = null;
+  try {
+    result = slimResult(detector.analyze(rgba, m.W, m.H), m.cells);
+  } catch (err) {
+    console.warn('analysis failed', err);
+  }
+  self.postMessage({ type: 'result', id: m.id, result, buffer: m.buffer }, [m.buffer]);
 };

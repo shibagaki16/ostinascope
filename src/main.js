@@ -50,6 +50,7 @@ const state = {
   procW: UNIT,
   procH: UNIT,
   now: 0,
+  paused: null, // the camera stopped: what the screen says instead of the loops
   audio,
 };
 
@@ -86,12 +87,7 @@ function layout() {
   proc.width = state.procW;
   proc.height = state.procH;
   readInsets();
-  if (aspectChanged) {
-    // coordinates changed under the tracks; start over
-    tracker.reset();
-    follower.reset();
-    for (const id of audio.voices.keys()) audio.fadeOut(id, 1);
-  }
+  if (aspectChanged) clearTracks(); // coordinates changed under the tracks; start over
 }
 window.addEventListener('resize', layout);
 layout();
@@ -257,11 +253,29 @@ function loop(ts) {
   if (vw !== state.W || vh !== state.H) layout(); // rotation, URL bar, etc.
   const src = state.source;
   if (!src) return;
-  if (!src.ready()) {
-    stalled(src, ts);
-    return;
+  // An error in one frame (an odd frame size, a browser quirk) must not stop
+  // the drawing: the screen would freeze with the last loops on it.
+  let ready = false;
+  try {
+    ready = src.ready();
+    if (ready) {
+      if (stall) recovered();
+      frame(src, ts, dt);
+    } else {
+      stalled(src, ts);
+    }
+  } catch (err) {
+    oops(err);
   }
-  stall = 0;
+  if (!ready && !state.paused) return; // a short hiccup: keep the last picture
+  try {
+    renderer.draw(state);
+  } catch (err) {
+    oops(err);
+  }
+}
+
+function frame(src, ts, dt) {
   if (src.step) src.step(dt, ts);
 
   const analysisDue = ts - lastAnalysis >= 1000 / ANALYSIS_HZ - 4;
@@ -291,43 +305,101 @@ function loop(ts) {
     if (tr.flash) tr.flash *= decay;
     if (tr.memberFlash) for (let i = 0; i < tr.memberFlash.length; i++) tr.memberFlash[i] = (tr.memberFlash[i] || 0) * decay;
   }
+}
 
-  renderer.draw(state);
+let lastOops = 0;
+function oops(err) {
+  const t = performance.now();
+  if (t - lastOops < 2000) return; // not every frame
+  lastOops = t;
+  console.error('frame failed', err);
+}
+
+// Let every pattern go: no tracks, their voices fade.
+function clearTracks() {
+  tracker.reset();
+  follower.reset();
+  state.tracks = [];
+  state.trackById = new Map();
+  state.followers = new Map();
+  state.result = null;
+  state.motionPoints = null;
+  state.stats.regions = 0;
+  for (const id of audio.voices.keys()) audio.fadeOut(id, 0.5);
 }
 
 // The camera stopped delivering frames (page was in the background, the
-// camera went to another app). The last view must not keep sounding:
-// after a moment, let everything go; meanwhile try to get the camera back.
+// camera went to another app, iOS froze the track). The last view must not
+// stay on screen or keep sounding: after a moment, let everything go and
+// say so; meanwhile try to get the camera back — the video restarted, or
+// the camera opened again when that does not help.
+const PAUSED = 'カメラの映像が止まっています — 戻るまでお待ちください（タップで再開）';
 let stall = 0;
 let reopening = false;
-let reopenAt = 0;
+let reopenAt = -1e9;
+let reopenFails = 0;
 function stalled(src, ts) {
   if (!stall) stall = ts;
   if (src.kind !== 'camera' || document.hidden) return;
-  if (ts - stall > 400 && state.tracks.length) {
-    tracker.reset();
-    follower.reset();
-    state.tracks = [];
-    state.trackById = new Map();
-    state.followers = new Map();
-    for (const id of audio.voices.keys()) audio.fadeOut(id, 0.5);
+  const ms = ts - stall;
+  if (ms > 400) {
+    if (state.tracks.length || audio.voices.size) clearTracks();
+    state.paused = PAUSED;
   }
-  if (src.ended) {
-    if (reopening || ts - reopenAt < 3000) return;
-    reopening = true;
-    reopenAt = ts;
-    src.stop();
-    openCamera($('#video'))
-      .then((cam) => {
-        if (state.camera === src) state.camera = cam;
-        if (state.source === src) state.source = cam;
-        else cam.stop();
-      })
-      .catch((err) => console.warn('camera reopen failed', err))
-      .finally(() => {
-        reopening = false;
-      });
-  } else src.resume(ts);
+  if (src.ended || ms > 2500) reopenCamera(src, ts);
+  else src.resume(ts);
+}
+
+function recovered() {
+  stall = 0;
+  reopenFails = 0;
+  state.paused = null;
+}
+
+function reopenCamera(src, ts, now = false) {
+  if (reopening || (!now && ts - reopenAt < 3000)) return;
+  reopening = true;
+  reopenAt = ts;
+  src.stop();
+  openCamera($('#video'))
+    .then((cam) => {
+      if (state.source === src) {
+        state.source = cam;
+        state.camera = cam;
+      } else {
+        // switched to the demo meanwhile
+        cam.stop();
+        if (state.camera === src) state.camera = null;
+      }
+    })
+    .catch((err) => {
+      console.warn('camera reopen failed', err);
+      reopenFails++;
+      // taken away for good (permission withdrawn) or again and again
+      // (another app keeps it): back to the start, saying why
+      if (state.source === src && (err?.name === 'NotAllowedError' || reopenFails >= 3)) cameraLost(err);
+    })
+    .finally(() => {
+      reopening = false;
+    });
+}
+
+function cameraLost(err) {
+  clearTracks();
+  if (state.camera) state.camera.stop();
+  state.camera = null;
+  state.source = null;
+  state.paused = null;
+  stall = 0;
+  reopenFails = 0;
+  showStart(startError('camera', err));
+}
+
+function showStart(message) {
+  $('#start-error').textContent = message;
+  $('#panel').hidden = true;
+  $('#start').hidden = false;
+  document.body.classList.remove('running');
 }
 
 // ---------------------------------------------------------------------------
@@ -359,34 +431,67 @@ async function demoSource() {
   return state.demo;
 }
 
-async function start(mode) {
-  audio.unlock(); // synchronously, inside the tap
+// What went wrong when starting, in words.
+function startError(mode, err) {
+  const why = (err && err.message) || String(err || '');
+  if (mode === 'demo') return `デモポスターを読み込めませんでした（${why}）。通信を確かめて、もう一度試してください。`;
+  switch (err && err.name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'カメラの使用が許可されませんでした。ブラウザの設定で許可するか、デモで試してください。';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'カメラが見つかりませんでした。デモで試してください。';
+    case 'NotReadableError':
+    case 'AbortError':
+      return 'カメラを開けませんでした。ほかのアプリ（ビデオ通話など）が使っていないか確かめて、もう一度試してください。';
+    default:
+      return `カメラを開けませんでした：${why}`;
+  }
+}
+
+// One start at a time: a second tap while the camera is opening must not
+// open a second one (the first would stay on, out of reach).
+let starting = null;
+function start(mode) {
+  if (starting) return starting;
+  starting = begin(mode).finally(() => {
+    starting = null;
+    for (const b of document.querySelectorAll('#btn-camera, #btn-demo, #switch-mode')) b.disabled = false;
+  });
+  return starting;
+}
+
+async function begin(mode) {
+  try {
+    audio.unlock(); // synchronously, inside the tap
+  } catch (err) {
+    console.warn('audio', err); // no sound, but the picture still works
+  }
+  for (const b of document.querySelectorAll('#btn-camera, #btn-demo, #switch-mode')) b.disabled = true;
   $('#start-error').textContent = '';
   try {
     if (mode === 'camera') {
-      if (!state.camera) state.camera = await openCamera($('#video'));
+      if (!state.camera || state.camera.ended) state.camera = await openCamera($('#video'));
       state.source = state.camera;
     } else {
+      // the demo first: if it cannot load, the camera is still there
+      const demo = await demoSource();
       if (state.camera) {
         state.camera.stop();
         state.camera = null;
       }
-      state.source = await demoSource();
+      state.source = demo;
     }
   } catch (err) {
     console.error(err);
-    const msg = err && err.name === 'NotAllowedError'
-      ? 'カメラの使用が許可されませんでした。ブラウザの設定で許可するか、デモで試してください。'
-      : `カメラを開けませんでした：${err.message || err}`;
-    $('#start-error').textContent = msg;
-    $('#start').hidden = false;
+    showStart(startError(mode, err));
     return;
   }
   state.mode = mode;
   document.body.dataset.mode = mode;
-  tracker.reset();
-  follower.reset();
-  for (const id of audio.voices.keys()) audio.fadeOut(id, 0.5);
+  clearTracks();
+  recovered();
   $('#start').hidden = true;
   document.body.classList.add('running');
   if (audio.ctx) audio.start();
@@ -418,6 +523,14 @@ document.addEventListener('visibilitychange', () => {
     requestWakeLock();
   }
 });
+// back from the browser's page cache (the back button, iOS restoring the
+// tab): the camera has usually been stopped — the frame loop notices
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted && state.running) {
+    audio.resumeContext();
+    requestWakeLock();
+  }
+});
 
 $('#btn-camera').addEventListener('click', () => start('camera'));
 $('#btn-demo').addEventListener('click', () => start('demo'));
@@ -425,6 +538,13 @@ $('#btn-demo').addEventListener('click', () => start('demo'));
 // always may)
 document.addEventListener('pointerdown', () => {
   if (state.running && !audio.running) audio.resumeContext();
+  // the camera stopped: inside a tap the phone allows more — try now
+  const src = state.source;
+  if (state.paused && src && src.kind === 'camera') {
+    const now = performance.now();
+    if (src.ended || (stall && now - stall > 1200)) reopenCamera(src, now, true);
+    else src.resume(now);
+  }
 }, { passive: true });
 
 // ---------------------------------------------------------------------------
@@ -474,26 +594,48 @@ $('#switch-mode').addEventListener('click', () => {
   start(state.mode === 'camera' ? 'demo' : 'camera');
 });
 
+const demoNote = (text) => {
+  $('#demo-note').textContent = text;
+};
+
 $('#file').addEventListener('change', async (e) => {
-  const file = e.target.files && e.target.files[0];
+  const input = e.target;
+  const file = input.files && input.files[0];
+  input.value = ''; // the same file again is a change too
   if (!file) return;
-  const bmp = await createImageBitmap(file);
-  const demo = await demoSource();
-  demo.setImage(bmp);
-  if (state.mode !== 'demo') start('demo');
-  tracker.reset();
+  demoNote('');
+  try {
+    const bmp = await createImageBitmap(file);
+    const demo = await demoSource();
+    demo.setImage(bmp);
+    if (state.mode !== 'demo') await start('demo');
+    clearTracks();
+  } catch (err) {
+    console.warn(err);
+    demoNote(`この画像は読み込めませんでした（${file.name}）。JPEG か PNG で試してください。`);
+  }
 });
 
 $('#save-poster').addEventListener('click', async () => {
-  const [spec] = await Promise.all([posterSpec(), fontsReady()]);
-  const cv = drawPoster(spec, 2);
-  cv.toBlob((blob) => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'ostinascope-specimen.png';
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  }, 'image/png');
+  demoNote('');
+  try {
+    const [spec] = await Promise.all([posterSpec(), fontsReady()]);
+    const cv = drawPoster(spec, 2);
+    cv.toBlob((blob) => {
+      if (!blob) {
+        demoNote('画像を作れませんでした（端末のメモリが足りないかもしれません）。');
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'ostinascope-specimen.png';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }, 'image/png');
+  } catch (err) {
+    console.warn(err);
+    demoNote('デモポスターを読み込めませんでした。通信を確かめて、もう一度試してください。');
+  }
 });
 
 // ---------------------------------------------------------------------------

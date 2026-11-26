@@ -30,23 +30,44 @@ export async function openCamera(video) {
   video.setAttribute('playsinline', '');
   video.muted = true;
   video.srcObject = stream;
-  await video.play();
+  try {
+    await video.play();
+  } catch (err) {
+    // the camera must not stay on when it cannot be shown
+    for (const t of stream.getTracks()) t.stop();
+    throw err;
+  }
   const track = stream.getVideoTracks()[0];
   let lastPlay = 0;
+  let stopped = false;
+  // When the newest frame came. iOS can stop the camera without pausing
+  // the video (back from the background, the track "muted"): the picture
+  // freezes, and analysing it would keep the last view's loops forever.
+  let lastFrame = performance.now();
+  const watch = typeof video.requestVideoFrameCallback === 'function';
+  if (watch) {
+    const onFrame = () => {
+      if (stopped) return;
+      lastFrame = performance.now();
+      video.requestVideoFrameCallback(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+  }
+  const mine = () => !stopped && video.srcObject === stream;
   return {
     kind: 'camera',
     // A paused video still reports a frame: analysing it would keep the
     // last view's loops playing. iOS pauses the video when the page goes
     // to the background and does not always resume it.
-    ready: () => video.readyState >= 2 && video.videoWidth > 0 && !video.paused && !video.ended &&
-      track.readyState === 'live',
-    /** the camera was taken away (another app, permissions): open it again */
+    ready: () => mine() && video.readyState >= 2 && video.videoWidth > 0 && !video.paused && !video.ended &&
+      track.readyState === 'live' && !track.muted && (!watch || performance.now() - lastFrame < 1000),
+    /** the camera was taken away (another app, permissions, stopped): open it again */
     get ended() {
-      return track.readyState === 'ended';
+      return !mine() || track.readyState === 'ended';
     },
     /** restart a paused video (at most once a second) */
     resume(now = performance.now()) {
-      if (!video.paused || now - lastPlay < 1000) return;
+      if (!mine() || !video.paused || now - lastPlay < 1000) return;
       lastPlay = now;
       video.play().catch(() => {});
     },
@@ -60,6 +81,7 @@ export async function openCamera(video) {
       ctx.drawImage(video, c.sx, c.sy, c.sw, c.sh, 0, 0, w, h);
     },
     stop() {
+      stopped = true;
       for (const t of stream.getTracks()) t.stop();
     },
   };

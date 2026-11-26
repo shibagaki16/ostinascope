@@ -28,37 +28,53 @@ export function slimResult(res, withCells) {
   };
 }
 
+// No answer for this long: the worker was stopped (the phone froze the
+// page) or hangs. Without this the analyser would stay busy for good, and
+// the tracks — updated only by results — would stay on screen and sound.
+const ANSWER_MS = 3000;
+
 export function createAnalyzer() {
   let worker = null;
   let local = null;
   let busy = false;
+  let sentAt = 0;
   let nextId = 1;
   let spare = null; // a buffer handed back by the worker, reused for the next frame
   const pending = new Map();
   let options = {};
 
-  try {
-    worker = new Worker(new URL('./analysis-worker.js', import.meta.url), { type: 'module' });
-    worker.onmessage = (e) => {
-      const m = e.data;
-      if (m.type !== 'result') return;
-      busy = false;
-      spare = m.buffer;
-      const done = pending.get(m.id);
-      pending.delete(m.id);
-      if (done) done(m.result);
-    };
-    worker.onerror = (err) => {
-      // module workers unsupported or failed to load: analyse here instead
-      console.warn('analysis worker failed, using the main thread', err.message || err);
-      worker = null;
-      busy = false;
-      for (const done of pending.values()) done(null);
-      pending.clear();
-    };
-  } catch {
-    worker = null;
+  function dropPending() {
+    busy = false;
+    for (const done of pending.values()) done(null);
+    pending.clear();
   }
+
+  function startWorker() {
+    try {
+      const w = new Worker(new URL('./analysis-worker.js', import.meta.url), { type: 'module' });
+      w.onmessage = (e) => {
+        const m = e.data;
+        if (m.type !== 'result' || w !== worker) return;
+        busy = false;
+        spare = m.buffer;
+        const done = pending.get(m.id);
+        pending.delete(m.id);
+        if (done) done(m.result);
+      };
+      w.onerror = (err) => {
+        // module workers unsupported or failed to load: analyse here instead
+        console.warn('analysis worker failed, using the main thread', err.message || err);
+        if (w !== worker) return;
+        worker = null;
+        dropPending();
+      };
+      if (Object.keys(options).length) w.postMessage({ type: 'options', options });
+      return w;
+    } catch {
+      return null;
+    }
+  }
+  worker = startWorker();
 
   function localDetector() {
     if (!local) local = createDetector(options);
@@ -67,6 +83,19 @@ export function createAnalyzer() {
 
   return {
     get busy() {
+      if (busy && worker && performance.now() - sentAt > ANSWER_MS) {
+        console.warn('analysis worker did not answer; starting a new one');
+        const old = worker;
+        worker = null;
+        try {
+          old.terminate();
+        } catch {
+          /* gone already */
+        }
+        dropPending();
+        spare = null;
+        worker = startWorker();
+      }
       return busy;
     },
     get threaded() {
@@ -83,7 +112,7 @@ export function createAnalyzer() {
      * still being analysed.
      */
     submit(imageData, withCells, onResult) {
-      if (busy) return false;
+      if (this.busy) return false;
       const { width: W, height: H, data } = imageData;
       if (!worker) {
         onResult(slimResult(localDetector().analyze(data, W, H), withCells));
@@ -95,6 +124,7 @@ export function createAnalyzer() {
       const id = nextId++;
       pending.set(id, onResult);
       busy = true;
+      sentAt = performance.now();
       worker.postMessage({ type: 'frame', id, buffer: buf, W, H, cells: withCells }, [buf]);
       return true;
     },
