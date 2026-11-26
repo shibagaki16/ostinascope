@@ -30,12 +30,9 @@ jobs:
           node-version: 24
       - run: npm test
 
-  deploy:
+  site:
     needs: test
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - name: The page that sends visitors to the new address
@@ -47,5 +44,16 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
+
+  # a job of its own: in the same job, right after the upload, the artifact
+  # is sometimes not listed yet ("No artifacts named github-pages"), and a
+  # re-run then finds two. Re-running this job alone reuses the one upload.
+  deploy:
+    needs: site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
