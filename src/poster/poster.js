@@ -404,10 +404,27 @@ const MOTIFS = {
     g.lineTo(x - w * 0.4, y);
     g.closePath();
     g.fill();
+    // the handle: a half ring whose ends run into the body. The body's side
+    // slants inwards, so a plain half ring stops short of it and leaves a
+    // gap at each end: turn the ring on until both corners of both ends'
+    // cuts are inside the body (same colour: the overlap does not show)
+    const lw = w * 0.12;
+    const r = h * 0.22;
+    const hx = x + w * 0.5;
+    const hy = y - h * 0.55;
+    const side = (py) => x + w * 0.5 - w * 0.1 * ((py - (y - h)) / h); // the body's right side at height py
+    let a = 0;
+    for (; a < 1.2; a += 0.02) {
+      const s = Math.sin(a);
+      const c = Math.cos(a);
+      const ends = [[hx - r * s, hy - r * c, -s, -c], [hx - r * s, hy + r * c, -s, c]]; // end, and its outward direction
+      const inside = ([ex, ey, dx, dy]) => [1, -1].every((k) => ex + (k * lw * dx) / 2 <= side(ey + (k * lw * dy) / 2));
+      if (ends.every(inside)) break;
+    }
     g.strokeStyle = color(el.color);
-    g.lineWidth = w * 0.12;
+    g.lineWidth = lw;
     g.beginPath();
-    g.arc(x + w * 0.5, y - h * 0.55, h * 0.22, -Math.PI / 2, Math.PI / 2);
+    g.arc(hx, hy, r, -Math.PI / 2 - a, Math.PI / 2 + a);
     g.stroke();
     g.fillStyle = color(el.accent);
     g.fillRect(x - w * 0.46, y - h * 0.75, w * 0.92, h * 0.16);
