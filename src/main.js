@@ -420,6 +420,21 @@ function showStart(message, help = null) {
       }
       box.append(ol);
     }
+    if (help.reload) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'secondary';
+      b.textContent = '読み込み直す';
+      b.addEventListener('click', () => {
+        try {
+          sessionStorage.setItem('osc-camera-retry', '1');
+        } catch {
+          /* no storage: reload anyway */
+        }
+        location.reload();
+      });
+      box.append(b);
+    }
     if (help.after) line(help.after, 'after');
   }
   $('#panel').hidden = true;
@@ -476,6 +491,19 @@ if (navigator.permissions?.query) {
   });
 }
 
+// back from "読み込み直す": say what comes next
+try {
+  if (sessionStorage.getItem('osc-camera-retry')) {
+    sessionStorage.removeItem('osc-camera-retry');
+    const p = document.createElement('p');
+    p.className = 'after';
+    p.textContent = '読み込み直しました。「タップして開始」を押すと、もう一度カメラの許可を聞かれます。聞かれないときは、Web サイトの設定でカメラを「確認」か「許可」にしてください。';
+    $('#start-error').append(p);
+  }
+} catch {
+  /* no storage */
+}
+
 function cameraAllowed(st) {
   if (!awaitingCamera || st === 'denied' || $('#start').hidden) return;
   awaitingCamera = false;
@@ -506,9 +534,20 @@ const ALLOW_STEPS = {
   chrome: ['アドレスバーの左端のアイコン（サイト情報）をクリック', '「カメラ」を「許可」（オン）にする'],
   edge: ['アドレスバーの左端のアイコン（サイト情報）をクリック', '「このサイトのアクセス許可」で「カメラ」を「許可」にする'],
   firefox: ['アドレスバーの左の、斜線の入ったカメラのアイコンをクリック', '「ブロック」の横の × を押して外す'],
-  safari: ['メニューの「Safari」→「設定…」→「Web サイト」を開く', '左の「カメラ」を選び、このサイトを「許可」にする'],
-  ios: ['アドレスバーの左端のアイコン（「ぁあ」）→「Web サイトの設定」を開く', '「カメラ」を「許可」か「確認」にする', 'それでも出ないときは「設定」アプリの「Safari」→「カメラ」を確かめる'],
-  'ios-chrome': ['「設定」アプリの「Chrome」を開く', '「カメラ」をオンにする'],
+  // Safari (WebKit — every browser on an iPhone): the first step is a reload
+  safari: [
+    '下の「読み込み直す」を押し、「タップして開始」→「許可」を選ぶ',
+    '聞かれないときは、メニューの「Safari」→「設定…」→「Web サイト」→「カメラ」で、このサイトを「確認」か「許可」にして、読み込み直す',
+  ],
+  ios: [
+    '下の「読み込み直す」を押し、「タップして開始」→「許可」を選ぶ',
+    '聞かれないときは、アドレスバーの左端のボタン（「ぁあ」など）→「Web サイトの設定」→「カメラ」を「確認」か「許可」にして、読み込み直す',
+    'それでも聞かれないときは、「設定」アプリの「Safari」（iOS 18 からは「アプリ」の中）→「カメラ」を「確認」か「許可」にする',
+  ],
+  'ios-chrome': [
+    '下の「読み込み直す」を押し、「タップして開始」→「許可」を選ぶ',
+    '聞かれないときは、「設定」アプリの「Chrome」（iOS 18 からは「アプリ」の中）→「カメラ」をオンにする',
+  ],
   android: ['アドレスバーの左端のアイコンをタップ →「権限」（または「サイトの設定」）', '「カメラ」を「許可」にする'],
   other: ['ブラウザの設定で、このサイトのカメラを「許可」にする'],
 };
@@ -527,6 +566,20 @@ function refusedHelp(err) {
       : { lead: 'Windows の設定で、カメラが止められています。',
         steps: ['「設定」→「プライバシーとセキュリティ」→「カメラ」を開く', '「カメラへのアクセス」と「デスクトップ アプリがカメラにアクセスできるようにする」をオンにする'],
         after: 'オンにしたら、もう一度「タップして開始」を押してください。' };
+  }
+  // Safari (WebKit) remembers a refusal until the page is loaded again:
+  // until then every tap is refused at once, with no dialog — and its
+  // permission still says "ask", so it looks like "only closed". A reload
+  // is the way back (and, if its setting is "deny", the setting first).
+  const kind = browserKind();
+  if (kind === 'safari' || kind.startsWith('ios')) {
+    awaitingCamera = true; // if it does tell of a change, try at once
+    return {
+      lead: 'Safari は、一度拒否すると、ページを読み込み直すまでカメラの許可を聞き直しません。',
+      steps: ALLOW_STEPS[kind],
+      reload: true,
+      after: 'デモで試すこともできます。',
+    };
   }
   // only closed (×), not blocked: the next tap asks again
   if (cameraPerm && cameraPerm.state === 'prompt') {

@@ -176,6 +176,7 @@ button {
   font-weight: 400;
 }
 #start-error .lead-in { margin-top: 6px; }
+#start-error .secondary { margin: 4px 0 6px; }
 
 .note {
   margin: 6px 0 0;
