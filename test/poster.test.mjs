@@ -177,7 +177,7 @@ test('repeat: the whole grid turns about its middle', () => {
   assert.deepEqual([el.x, el.y, el.rotation], [100, 100, 180]); // its middle (50, 0) → (150, 100)
 });
 
-test('tiled hex dots (tactile paving): every dot whole inside its tile, long and short rows in turn', () => {
+test('tiled hex dots: every dot whole inside its tile, long and short rows in turn', () => {
   const arcs = [];
   const g = new Proxy({}, {
     get: (_, k) => (k === 'arc' ? (x, y, r) => arcs.push([x, y, r]) : k === 'measureText' ? () => ({ width: 0 }) : () => {}),
@@ -193,4 +193,28 @@ test('tiled hex dots (tactile paving): every dot whole inside its tile, long and
     const inTile = (v) => (v < 0 ? v - r >= -240 && v + r <= -240 + tw : v - r >= 240 - tw && v + r <= 240);
     assert.ok(inTile(x) && inTile(y), `dot at ${x.toFixed(1)}, ${y.toFixed(1)} is cut`);
   }
+});
+
+test('tiled square dots (tactile paving, fig.8): 5×5 a tile, every dot whole', () => {
+  const arcs = [];
+  const g = new Proxy({}, {
+    get: (_, k) => (k === 'arc' ? (x, y, r) => arcs.push([x, y, r]) : k === 'measureText' ? () => ({ width: 0 }) : () => {}),
+    set: () => true,
+  });
+  const fig8 = spec.elements.find((e) => e.id === 'fig8');
+  assert.equal(fig8.pattern.kind, 'dots');
+  paint(g, { ...spec, elements: [{ ...fig8, x: 0, y: 0, rotation: 0 }] });
+  const { a, r, gap } = fig8.pattern;
+  const W = fig8.shape.w;
+  const tw = (W - gap) / 2;
+  const dots = arcs.filter((d) => d[2] === r);
+  assert.equal(dots.length, 4 * 25);
+  for (const [x, y] of dots) {
+    const inTile = (v) => (v < 0 ? v - r >= -W / 2 && v + r <= -W / 2 + tw : v - r >= W / 2 - tw && v + r <= W / 2);
+    assert.ok(inTile(x) && inTile(y), `dot at ${x.toFixed(1)}, ${y.toFixed(1)} is cut`);
+  }
+  // evenly: the same margin on every side of a tile
+  const xs = [...new Set(dots.map((d) => Math.round(d[0] * 100) / 100))].sort((p, q) => p - q);
+  assert.ok(Math.abs(xs[0] - r - -W / 2 - (-gap / 2 - (xs[4] + r))) < 1e-6);
+  assert.ok(Math.abs(xs[1] - xs[0] - a) < 1e-6);
 });

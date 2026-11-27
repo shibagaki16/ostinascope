@@ -265,24 +265,25 @@ const SHAPES = {
 // Patterns are drawn around the figure's centre, over a square of half-side
 // E that covers the shape; the clip trims them.
 
-// Hexagonal dots tile by tile, over a w×h figure (centred on 0, 0): in each
-// tile as many rows as fit, long and short in turn (4・3・4・3・4…), long
-// ones at both ends, the whole centred — so every dot is whole.
-function tiledHexdots(g, p, w, h) {
+// Dots tile by tile, over a w×h figure (centred on 0, 0), `gap` between the
+// tiles: in each tile as many rows and columns as fit, the whole centred, so
+// every dot is whole. Square: a×a. Hexagonal: rows long and short in turn
+// (4・3・4・3・4…), long ones at both ends.
+function tiledDots(g, p, w, h, hex) {
   const n = Math.max(1, Math.round(p.tiles));
   const gap = p.gap || 0;
   const tw = (w - (n - 1) * gap) / n;
   const th = (h - (n - 1) * gap) / n;
-  const rowH = (p.a * Math.sqrt(3)) / 2;
+  const rowH = hex ? (p.a * Math.sqrt(3)) / 2 : p.a;
   const cols = Math.max(1, Math.floor((tw - 2 * p.r) / p.a) + 1);
   let rows = Math.max(1, Math.floor((th - 2 * p.r) / rowH) + 1);
-  if (rows > 1 && rows % 2 === 0) rows--; // odd: long rows at the top and the bottom
+  if (hex && rows > 1 && rows % 2 === 0) rows--; // odd: long rows at the top and the bottom
   for (let ti = 0; ti < n; ti++) {
     for (let tj = 0; tj < n; tj++) {
       const cx = -w / 2 + tw / 2 + ti * (tw + gap);
       const cy = -h / 2 + th / 2 + tj * (th + gap);
       for (let k = 0; k < rows; k++) {
-        const count = k % 2 ? cols - 1 : cols;
+        const count = hex && k % 2 ? cols - 1 : cols;
         const y = cy + (k - (rows - 1) / 2) * rowH;
         for (let i = 0; i < count; i++) {
           g.beginPath();
@@ -315,13 +316,13 @@ const PATTERNS = {
     },
   },
   // a hexagonal lattice of dots, `a` apart. With `tiles`, the figure is n×n
-  // tiles `gap` apart (a tactile paving block) and each tile has its own
-  // dots, laid out to fit it — whole dots only, none cut by an edge or a gap
+  // tiles `gap` apart and each tile has its own dots, laid out to fit it —
+  // whole dots only, none cut by an edge or a gap
   hexdots: {
     draw(g, p, E, color, R, shape) {
       g.fillStyle = color(p.color);
       if (p.tiles > 0) {
-        tiledHexdots(g, p, shape?.w ?? 2 * R, shape?.h ?? 2 * R);
+        tiledDots(g, p, shape?.w ?? 2 * R, shape?.h ?? 2 * R, true);
         return;
       }
       const [ox, oy] = p.phase || [0, 0];
@@ -333,6 +334,25 @@ const PATTERNS = {
         for (let xx = firstOnLattice(sx, p.a, -E - p.a); xx < E + p.a; xx += p.a) {
           g.beginPath();
           g.arc(xx, yy, p.r, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+    },
+  },
+  // a square lattice of dots, `a` apart; `tiles` as for hexdots (a tactile
+  // paving block: 5×5 a tile)
+  dots: {
+    draw(g, p, E, color, R, shape) {
+      g.fillStyle = color(p.color);
+      if (p.tiles > 0) {
+        tiledDots(g, p, shape?.w ?? 2 * R, shape?.h ?? 2 * R, false);
+        return;
+      }
+      const [ox, oy] = p.phase || [0, 0];
+      for (let y = firstOnLattice(oy, p.a, -E - p.a); y < E + p.a; y += p.a) {
+        for (let x = firstOnLattice(ox, p.a, -E - p.a); x < E + p.a; x += p.a) {
+          g.beginPath();
+          g.arc(x, y, p.r, 0, Math.PI * 2);
           g.fill();
         }
       }
@@ -580,7 +600,7 @@ const PATTERN_FIELDS = [
   { key: 'shape.points', label: '頂点 (x,y; …)', type: 'points', when: shapeIs('polygon') },
   { key: 'fill', label: '地の色（空=なし）', type: 'color', optional: true },
   { key: 'pattern.kind', label: '模様', type: 'select', options: Object.keys(PATTERNS) },
-  { ...F.color('pattern.color', '模様の色'), when: patIs('stripes', 'grid', 'hexdots', 'rings', 'rays') },
+  { ...F.color('pattern.color', '模様の色'), when: patIs('stripes', 'grid', 'hexdots', 'dots', 'rings', 'rays') },
   { ...F.num('pattern.period', '間隔'), when: patIs('stripes') },
   { ...F.num('pattern.angle', '線の向き°'), when: patIs('stripes') },
   { ...F.num('pattern.duty', '線の太さ比', 0.01, 0.02, 0.98), when: patIs('stripes', 'rays') },
@@ -588,11 +608,11 @@ const PATTERN_FIELDS = [
   { ...F.num('pattern.px', '横の間隔'), when: patIs('grid') },
   { ...F.num('pattern.py', '縦の間隔'), when: patIs('grid') },
   { ...F.num('pattern.lineWidth', '線幅', 0.5), when: patIs('grid', 'rings') },
-  { ...F.num('pattern.a', '点の間隔'), when: patIs('hexdots') },
-  { ...F.num('pattern.r', '点の半径', 0.5), when: patIs('hexdots') },
-  { ...F.num('pattern.tiles', '枚数（1 辺。0 = 分けない）', 1, 0), when: patIs('hexdots'), optional: true, def: 0 },
-  { ...F.num('pattern.gap', '目地の幅', 0.5, 0), when: (el) => el.pattern.kind === 'hexdots' && el.pattern.tiles > 0, optional: true, def: 0 },
-  { key: 'pattern.phase', label: '位相 (x,y)', type: 'numbers', when: (el) => patIs('grid', 'hexdots')(el) && !(el.pattern.tiles > 0) },
+  { ...F.num('pattern.a', '点の間隔'), when: patIs('hexdots', 'dots') },
+  { ...F.num('pattern.r', '点の半径', 0.5), when: patIs('hexdots', 'dots') },
+  { ...F.num('pattern.tiles', '枚数（1 辺。0 = 分けない）', 1, 0), when: patIs('hexdots', 'dots'), optional: true, def: 0 },
+  { ...F.num('pattern.gap', '目地の幅', 0.5, 0), when: (el) => patIs('hexdots', 'dots')(el) && el.pattern.tiles > 0, optional: true, def: 0 },
+  { key: 'pattern.phase', label: '位相 (x,y)', type: 'numbers', when: (el) => patIs('grid', 'hexdots', 'dots')(el) && !(el.pattern.tiles > 0) },
   { ...F.num('pattern.r0', '最初の半径'), when: patIs('rings') },
   { ...F.num('pattern.dr', '輪の間隔'), when: patIs('rings') },
   { ...F.num('pattern.n', '本数', 2, 4), when: patIs('rays') },
@@ -607,6 +627,7 @@ export const PATTERN_DEFAULTS = {
   stripes: { kind: 'stripes', period: 24, angle: 0, duty: 0.5, phase: 0, color: 'ink' },
   grid: { kind: 'grid', px: 36, py: 48, lineWidth: 6, phase: [0, 0], color: 'ink' },
   hexdots: { kind: 'hexdots', a: 30, r: 7.5, phase: [0, 0], color: 'ink' },
+  dots: { kind: 'dots', a: 30, r: 7.5, phase: [0, 0], color: 'ink' },
   rings: { kind: 'rings', r0: 14, dr: 20, lineWidth: 9, color: 'ink' },
   rays: { kind: 'rays', n: 96, duty: 0.5, color: 'ink' },
 };
