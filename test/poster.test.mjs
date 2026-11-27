@@ -176,3 +176,21 @@ test('repeat: the whole grid turns about its middle', () => {
   rotateElement(el, 90, 50, 100, g, ctx);
   assert.deepEqual([el.x, el.y, el.rotation], [100, 100, 180]); // its middle (50, 0) → (150, 100)
 });
+
+test('tiled hex dots (tactile paving): every dot whole inside its tile, long and short rows in turn', () => {
+  const arcs = [];
+  const g = new Proxy({}, {
+    get: (_, k) => (k === 'arc' ? (x, y, r) => arcs.push([x, y, r]) : k === 'measureText' ? () => ({ width: 0 }) : () => {}),
+    set: () => true,
+  });
+  const el = { ...TYPES.pattern.make(), x: 0, y: 0, rotation: 0, shape: { kind: 'rect', w: 480, h: 480 },
+    pattern: { kind: 'hexdots', a: 56, r: 15, tiles: 2, gap: 6, color: 'ink' } };
+  paint(g, { ...spec, elements: [el] });
+  const dots = arcs.filter(([, , r]) => r === 15);
+  assert.equal(dots.length, 4 * (4 + 3 + 4 + 3 + 4));
+  const tw = (480 - 6) / 2;
+  for (const [x, y, r] of dots) {
+    const inTile = (v) => (v < 0 ? v - r >= -240 && v + r <= -240 + tw : v - r >= 240 - tw && v + r <= 240);
+    assert.ok(inTile(x) && inTile(y), `dot at ${x.toFixed(1)}, ${y.toFixed(1)} is cut`);
+  }
+});
